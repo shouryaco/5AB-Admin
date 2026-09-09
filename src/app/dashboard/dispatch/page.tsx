@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
 import {
   CalendarDays,
@@ -10,8 +11,12 @@ import {
   Eye,
   Loader2,
   MapPin,
+  Pencil,
+  Phone,
+  Plus,
   RefreshCw,
   Route,
+  Search,
   User,
   Users,
   X,
@@ -129,6 +134,9 @@ export default function DispatchPage() {
   const [assigning, setAssigning] = useState(false);
 
   const [error, setError] = useState("");
+  const [assignmentError, setAssignmentError] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const fetchDrivers = useCallback(async () => {
     try {
@@ -167,6 +175,8 @@ export default function DispatchPage() {
 
         busyDrivers: [...response.data.busyDrivers],
       });
+
+      setLastUpdated(new Date());
     } catch (error) {
       console.error("Failed to load dispatch board:", error);
 
@@ -188,7 +198,7 @@ export default function DispatchPage() {
     const handleDispatchUpdate = (update: unknown) => {
       console.log("Realtime update received", update);
 
-      fetchDispatchBoard();
+      void Promise.all([fetchDispatchBoard(), fetchDrivers()]);
     };
 
     socket.on("connect", handleConnect);
@@ -204,6 +214,7 @@ export default function DispatchPage() {
 
   function openBooking(booking: Booking) {
     setSelectedBooking(booking);
+    setAssignmentError("");
 
     setSelectedDriverId(
       booking.assignedDriverId || booking.assignedDriver?.id || "",
@@ -217,6 +228,7 @@ export default function DispatchPage() {
 
     setSelectedBooking(null);
     setSelectedDriverId("");
+    setAssignmentError("");
   }
 
   async function assignDriver() {
@@ -226,6 +238,7 @@ export default function DispatchPage() {
 
     try {
       setAssigning(true);
+      setAssignmentError("");
 
       await api.patch(`/bookings/${selectedBooking.id}/assign-driver`, {
         driverId: selectedDriverId,
@@ -240,9 +253,9 @@ export default function DispatchPage() {
 
       const message = error?.response?.data?.message;
 
-      alert(
+      setAssignmentError(
         Array.isArray(message)
-          ? message.join("\n")
+          ? message.join(" ")
           : message || "Unable to assign driver.",
       );
     } finally {
@@ -251,8 +264,70 @@ export default function DispatchPage() {
   }
 
   const assignableDrivers = useMemo(() => {
-    return drivers.filter((driver) => driver.status !== "INACTIVE");
+    const statusOrder: Record<DriverStatus, number> = {
+      AVAILABLE: 0,
+      OFFLINE: 1,
+      BUSY: 2,
+      INACTIVE: 3,
+    };
+
+    return drivers
+      .filter((driver) => driver.status !== "INACTIVE")
+      .sort(
+        (a, b) =>
+          statusOrder[a.status] - statusOrder[b.status] ||
+          a.name.localeCompare(b.name),
+      );
   }, [drivers]);
+
+  const driverGroups = useMemo(
+    () => ({
+      available: drivers.filter((driver) => driver.status === "AVAILABLE"),
+      busy: drivers.filter((driver) => driver.status === "BUSY"),
+      offline: drivers.filter((driver) => driver.status === "OFFLINE"),
+      inactive: drivers.filter((driver) => driver.status === "INACTIVE"),
+    }),
+    [drivers],
+  );
+
+  const filteredDispatch = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+
+    const filterBookings = (items: Booking[]) => {
+      const sorted = [...items].sort(
+        (a, b) =>
+          new Date(a.pickupDatetime).getTime() -
+          new Date(b.pickupDatetime).getTime(),
+      );
+
+      if (!term) return sorted;
+
+      return sorted.filter((booking) =>
+        [
+          booking.bookingReference,
+          booking.customerName,
+          booking.customerPhone,
+          booking.pickupAddress,
+          booking.dropoffAddress,
+          booking.assignedDriver?.name,
+          booking.assignedDriver?.vehicleName,
+          booking.assignedDriver?.vehicleNumber,
+        ]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(term)),
+      );
+    };
+
+    return {
+      unassigned: filterBookings(data?.unassignedBookings || []),
+      active: filterBookings(data?.activeBookings || []),
+      upcoming: filterBookings(data?.upcomingBookings || []),
+    };
+  }, [data, searchTerm]);
+
+  const refreshAll = useCallback(async () => {
+    await Promise.all([fetchDispatchBoard(true), fetchDrivers()]);
+  }, [fetchDispatchBoard, fetchDrivers]);
 
   if (loading) {
     return (
@@ -283,22 +358,31 @@ export default function DispatchPage() {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => fetchDispatchBoard(true)}
-          disabled={refreshing}
-          className="inline-flex w-fit items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-60"
-        >
-          <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href="/dashboard/bookings/new"
+            className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+          >
+            <Plus size={16} />
+            New Booking
+          </Link>
 
-          {refreshing ? "Refreshing..." : "Refresh"}
-        </button>
+          <button
+            type="button"
+            onClick={refreshAll}
+            disabled={refreshing}
+            className="inline-flex w-fit items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-60"
+          >
+            <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
+            {refreshing ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
       </div>
 
       {/* Summary */}
 
       {data?.summary && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
           <SummaryCard
             label="Unassigned"
             value={data.summary.unassignedCount}
@@ -328,6 +412,12 @@ export default function DispatchPage() {
             value={data.summary.busyDrivers}
             icon={<Clock3 size={19} />}
           />
+
+          <SummaryCard
+            label="Offline Drivers"
+            value={driverGroups.offline.length}
+            icon={<User size={19} />}
+          />
         </div>
       )}
 
@@ -337,6 +427,37 @@ export default function DispatchPage() {
         </div>
       )}
 
+      {/* Search / live status */}
+
+      <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:flex-row lg:items-center lg:justify-between">
+        <div className="relative w-full lg:max-w-xl">
+          <Search
+            size={17}
+            className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
+          />
+          <input
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder="Search booking, passenger, address or driver..."
+            className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pr-4 text-sm text-slate-700 outline-none transition focus:border-slate-400"
+            style={{ paddingLeft: "2.75rem" }}
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400">
+          <span>
+            Realtime:{" "}
+            <strong className="font-semibold text-emerald-600">On</strong>
+          </span>
+          <span>
+            Last updated:{" "}
+            <strong className="font-semibold text-slate-600">
+              {lastUpdated ? formatTimeOnly(lastUpdated) : "—"}
+            </strong>
+          </span>
+        </div>
+      </div>
+
       {/* Board */}
 
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
@@ -344,7 +465,7 @@ export default function DispatchPage() {
           title="Unassigned"
           description="Waiting for driver assignment"
           dotClass="bg-red-500"
-          bookings={data?.unassignedBookings || []}
+          bookings={filteredDispatch.unassigned}
           onBookingClick={openBooking}
         />
 
@@ -352,7 +473,7 @@ export default function DispatchPage() {
           title="Active Trips"
           description="Accepted and in-progress journeys"
           dotClass="bg-emerald-500"
-          bookings={data?.activeBookings || []}
+          bookings={filteredDispatch.active}
           onBookingClick={openBooking}
         />
 
@@ -360,10 +481,54 @@ export default function DispatchPage() {
           title="Upcoming"
           description="Assigned future bookings"
           dotClass="bg-amber-500"
-          bookings={data?.upcomingBookings || []}
+          bookings={filteredDispatch.upcoming}
           onBookingClick={openBooking}
         />
       </div>
+
+      {/* Driver Status */}
+
+      <section className="space-y-4">
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-lg font-bold text-slate-900">Driver Status</h2>
+            <p className="mt-1 text-xs text-slate-400">
+              Current operational status. Offline and busy drivers may still be
+              assigned to future non-conflicting work.
+            </p>
+          </div>
+
+          <Link
+            href="/dashboard/drivers"
+            className="text-sm font-semibold text-slate-600 transition hover:text-slate-900"
+          >
+            Manage drivers →
+          </Link>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <DriverColumn
+            title="Available"
+            status="AVAILABLE"
+            drivers={driverGroups.available}
+          />
+          <DriverColumn
+            title="Busy"
+            status="BUSY"
+            drivers={driverGroups.busy}
+          />
+          <DriverColumn
+            title="Offline"
+            status="OFFLINE"
+            drivers={driverGroups.offline}
+          />
+          <DriverColumn
+            title="Inactive"
+            status="INACTIVE"
+            drivers={driverGroups.inactive}
+          />
+        </div>
+      </section>
 
       {/* Booking Drawer */}
 
@@ -388,13 +553,25 @@ export default function DispatchPage() {
                   {selectedBooking.bookingReference}
                 </h2>
 
-                <span
-                  className={`mt-2 inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${
-                    statusClasses[selectedBooking.status]
-                  }`}
-                >
-                  {selectedBooking.status}
-                </span>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span
+                    className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${
+                      statusClasses[selectedBooking.status]
+                    }`}
+                  >
+                    {formatStatus(selectedBooking.status)}
+                  </span>
+
+                  {canEditBooking(selectedBooking.status) && (
+                    <Link
+                      href={`/dashboard/bookings/${selectedBooking.id}/edit`}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-slate-800"
+                    >
+                      <Pencil size={12} />
+                      Edit
+                    </Link>
+                  )}
+                </div>
               </div>
 
               <button
@@ -421,6 +598,7 @@ export default function DispatchPage() {
                   />
 
                   <DetailRow
+                    icon={<Phone size={15} />}
                     label="Phone"
                     value={selectedBooking.customerPhone || "—"}
                   />
@@ -541,6 +719,12 @@ export default function DispatchPage() {
                       bookings. Scheduling conflicts are checked automatically.
                       Inactive drivers are excluded.
                     </div>
+
+                    {assignmentError && (
+                      <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-xs font-medium leading-5 text-red-700">
+                        {assignmentError}
+                      </div>
+                    )}
 
                     <button
                       type="button"
@@ -664,7 +848,7 @@ function BookingCard({
             statusClasses[booking.status]
           }`}
         >
-          {booking.status}
+          {formatStatus(booking.status)}
         </span>
       </div>
 
@@ -710,8 +894,87 @@ function BookingCard({
       >
         <Eye size={14} />
 
-        {booking.status === "PENDING" ? "View & Assign" : "View Booking"}
+        {booking.status === "PENDING"
+          ? "View & Assign"
+          : booking.status === "ASSIGNED"
+            ? "View / Reassign"
+            : "View Booking"}
       </button>
+    </div>
+  );
+}
+
+function DriverColumn({
+  title,
+  status,
+  drivers,
+}: {
+  title: string;
+  status: DriverStatus;
+  drivers: Driver[];
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span
+            className={`h-2.5 w-2.5 rounded-full ${
+              status === "AVAILABLE"
+                ? "bg-emerald-500"
+                : status === "BUSY"
+                  ? "bg-amber-500"
+                  : status === "OFFLINE"
+                    ? "bg-slate-400"
+                    : "bg-red-500"
+            }`}
+          />
+          <h3 className="text-sm font-bold text-slate-800">{title}</h3>
+        </div>
+
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-600">
+          {drivers.length}
+        </span>
+      </div>
+
+      <div className="mt-4 space-y-2">
+        {drivers
+          .slice()
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((driver) => (
+            <div
+              key={driver.id}
+              className="rounded-xl border border-slate-100 bg-slate-50/70 p-3"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-slate-800">
+                    {driver.name}
+                  </p>
+                  <p className="mt-1 truncate text-xs text-slate-500">
+                    {driver.vehicleName || "Vehicle not set"}
+                  </p>
+                  {driver.vehicleNumber && (
+                    <p className="mt-0.5 text-[11px] text-slate-400">
+                      {driver.vehicleNumber}
+                    </p>
+                  )}
+                </div>
+
+                <span
+                  className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold ${driverStatusClasses[driver.status]}`}
+                >
+                  {formatStatus(driver.status)}
+                </span>
+              </div>
+            </div>
+          ))}
+
+        {drivers.length === 0 && (
+          <div className="rounded-xl border border-dashed border-slate-200 px-3 py-6 text-center text-xs text-slate-400">
+            No drivers
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -786,6 +1049,7 @@ function CardInfo({ icon, value }: { icon: React.ReactNode; value: string }) {
 
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString("en-GB", {
+    timeZone: "Europe/London",
     day: "2-digit",
     month: "short",
     year: "numeric",
@@ -794,6 +1058,26 @@ function formatDateTime(value: string) {
   });
 }
 
+function formatTimeOnly(value: Date) {
+  return value.toLocaleTimeString("en-GB", {
+    timeZone: "Europe/London",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function formatStatus(value: string) {
+  return value
+    .toLowerCase()
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 function canAssignDriver(status: BookingStatus) {
   return ["PENDING", "ASSIGNED"].includes(status);
+}
+
+function canEditBooking(status: BookingStatus) {
+  return !["COMPLETED", "CANCELLED", "REJECTED"].includes(status);
 }
