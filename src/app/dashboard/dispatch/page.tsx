@@ -8,6 +8,7 @@ import {
   Car,
   CheckCircle2,
   Clock3,
+  Copy,
   Eye,
   Loader2,
   MapPin,
@@ -25,6 +26,11 @@ import {
 import socket from "@/lib/socket";
 import api from "@/lib/api";
 
+import {
+  getBookingStatusClass,
+  getBookingStatusLabel,
+} from "@/lib/booking-status-ui";
+
 type BookingStatus =
   | "PENDING"
   | "ASSIGNED"
@@ -36,6 +42,21 @@ type BookingStatus =
   | "CANCELLED";
 
 type DriverStatus = "AVAILABLE" | "BUSY" | "OFFLINE" | "INACTIVE";
+
+type BookingLifecycleAction =
+  | "accept"
+  | "arrived"
+  | "start"
+  | "complete"
+  | "cancel";
+
+type DispatchFilter =
+  | "ALL"
+  | "NOT_ACCEPTED"
+  | "ON_ROAD"
+  | "ARRIVED"
+  | "PASSENGER_ON_BOARD"
+  | "COMPLETED";
 
 type Driver = {
   id: string;
@@ -69,43 +90,50 @@ type Booking = {
   assignedDriverId?: string | null;
 
   assignedDriver?: Driver | null;
+
+  completedAt?: string | null;
 };
 
 type DispatchSummary = {
+  // Existing summary fields kept for compatibility
   unassignedCount: number;
   activeCount: number;
   upcomingCount: number;
+
+  // New operational lane counts
+  notAcceptedCount: number;
+  onRoadCount: number;
+  arrivedCount: number;
+  passengerOnBoardCount: number;
+  completedCount: number;
+
+  // Driver counts
   availableDrivers: number;
   busyDrivers: number;
+  offlineDrivers?: number;
+  inactiveDrivers?: number;
 };
 
 type DispatchData = {
   summary: DispatchSummary;
 
+  // Existing groups kept for compatibility
   unassignedBookings: Booking[];
   activeBookings: Booking[];
   upcomingBookings: Booking[];
 
+  // New operational lanes
+  notAcceptedBookings: Booking[];
+  onRoadBookings: Booking[];
+  arrivedBookings: Booking[];
+  passengerOnBoardBookings: Booking[];
+  completedBookings: Booking[];
+
+  // Drivers
   availableDrivers: Driver[];
   busyDrivers: Driver[];
-};
-
-const statusClasses: Record<BookingStatus, string> = {
-  PENDING: "border-red-200 bg-red-50 text-red-700",
-
-  ASSIGNED: "border-violet-200 bg-violet-50 text-violet-700",
-
-  ACCEPTED: "border-cyan-200 bg-cyan-50 text-cyan-700",
-
-  ARRIVED: "border-amber-200 bg-amber-50 text-amber-700",
-
-  STARTED: "border-emerald-200 bg-emerald-50 text-emerald-700",
-
-  COMPLETED: "border-emerald-200 bg-emerald-50 text-emerald-700",
-
-  REJECTED: "border-red-200 bg-red-50 text-red-700",
-
-  CANCELLED: "border-slate-200 bg-slate-100 text-slate-600",
+  offlineDrivers?: Driver[];
+  inactiveDrivers?: Driver[];
 };
 
 const driverStatusClasses: Record<DriverStatus, string> = {
@@ -132,9 +160,16 @@ export default function DispatchPage() {
   const [selectedDriverId, setSelectedDriverId] = useState("");
 
   const [assigning, setAssigning] = useState(false);
+  const [statusActionLoading, setStatusActionLoading] = useState(false);
+  const [quickActionBookingId, setQuickActionBookingId] = useState<
+    string | null
+  >(null);
+
+  const [activeFilter, setActiveFilter] = useState<DispatchFilter>("ALL");
 
   const [error, setError] = useState("");
   const [assignmentError, setAssignmentError] = useState("");
+  const [statusActionError, setStatusActionError] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
@@ -158,23 +193,11 @@ export default function DispatchPage() {
 
       setError("");
 
-      const response = await api.get("/admin/dashboard/dispatch-board");
+      const response = await api.get<DispatchData>(
+        "/admin/dashboard/dispatch-board",
+      );
 
-      setData({
-        summary: {
-          ...response.data.summary,
-        },
-
-        unassignedBookings: [...response.data.unassignedBookings],
-
-        activeBookings: [...response.data.activeBookings],
-
-        upcomingBookings: [...response.data.upcomingBookings],
-
-        availableDrivers: [...response.data.availableDrivers],
-
-        busyDrivers: [...response.data.busyDrivers],
-      });
+      setData(response.data);
 
       setLastUpdated(new Date());
     } catch (error) {
@@ -215,6 +238,7 @@ export default function DispatchPage() {
   function openBooking(booking: Booking) {
     setSelectedBooking(booking);
     setAssignmentError("");
+    setStatusActionError("");
 
     setSelectedDriverId(
       booking.assignedDriverId || booking.assignedDriver?.id || "",
@@ -222,13 +246,14 @@ export default function DispatchPage() {
   }
 
   function closeBooking() {
-    if (assigning) {
+    if (assigning || statusActionLoading) {
       return;
     }
 
     setSelectedBooking(null);
     setSelectedDriverId("");
     setAssignmentError("");
+    setStatusActionError("");
   }
 
   async function assignDriver() {
@@ -248,10 +273,18 @@ export default function DispatchPage() {
 
       setSelectedBooking(null);
       setSelectedDriverId("");
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error("Failed to assign driver:", error);
 
-      const message = error?.response?.data?.message;
+      const requestError = error as {
+        response?: {
+          data?: {
+            message?: string | string[];
+          };
+        };
+      };
+
+      const message = requestError.response?.data?.message;
 
       setAssignmentError(
         Array.isArray(message)
@@ -260,6 +293,58 @@ export default function DispatchPage() {
       );
     } finally {
       setAssigning(false);
+    }
+  }
+
+  async function runBookingStatusAction(
+    action: BookingLifecycleAction,
+    bookingOverride?: Booking,
+  ) {
+    const booking = bookingOverride || selectedBooking;
+
+    if (!booking) {
+      return;
+    }
+
+    try {
+      setStatusActionLoading(true);
+      setQuickActionBookingId(booking.id);
+      setStatusActionError("");
+      setError("");
+
+      await api.patch(`/bookings/${booking.id}/${action}`);
+
+      await Promise.all([fetchDispatchBoard(true), fetchDrivers()]);
+
+      if (selectedBooking?.id === booking.id) {
+        setSelectedBooking(null);
+        setSelectedDriverId("");
+      }
+    } catch (error: unknown) {
+      console.error("Failed to update booking status:", error);
+
+      const requestError = error as {
+        response?: {
+          data?: {
+            message?: string | string[];
+          };
+        };
+      };
+
+      const message = requestError.response?.data?.message;
+
+      const errorMessage = Array.isArray(message)
+        ? message.join(" ")
+        : message || "Unable to update booking status.";
+
+      setStatusActionError(errorMessage);
+
+      if (!selectedBooking || selectedBooking.id !== booking.id) {
+        setError(errorMessage);
+      }
+    } finally {
+      setStatusActionLoading(false);
+      setQuickActionBookingId(null);
     }
   }
 
@@ -319,11 +404,71 @@ export default function DispatchPage() {
     };
 
     return {
-      unassigned: filterBookings(data?.unassignedBookings || []),
-      active: filterBookings(data?.activeBookings || []),
-      upcoming: filterBookings(data?.upcomingBookings || []),
+      notAccepted: filterBookings(data?.notAcceptedBookings || []),
+
+      onRoad: filterBookings(data?.onRoadBookings || []),
+
+      arrived: filterBookings(data?.arrivedBookings || []),
+
+      passengerOnBoard: filterBookings(data?.passengerOnBoardBookings || []),
+
+      completed: filterBookings(data?.completedBookings || []),
     };
   }, [data, searchTerm]);
+
+  const dispatchRows = useMemo(() => {
+    const groups: Record<DispatchFilter, Booking[]> = {
+      ALL: [
+        ...filteredDispatch.notAccepted,
+        ...filteredDispatch.onRoad,
+        ...filteredDispatch.arrived,
+        ...filteredDispatch.passengerOnBoard,
+        ...filteredDispatch.completed,
+      ],
+      NOT_ACCEPTED: filteredDispatch.notAccepted,
+      ON_ROAD: filteredDispatch.onRoad,
+      ARRIVED: filteredDispatch.arrived,
+      PASSENGER_ON_BOARD: filteredDispatch.passengerOnBoard,
+      COMPLETED: filteredDispatch.completed,
+    };
+
+    const statusOrder: Record<BookingStatus, number> = {
+      PENDING: 0,
+      ASSIGNED: 0,
+      ACCEPTED: 1,
+      ARRIVED: 2,
+      STARTED: 3,
+      COMPLETED: 4,
+      REJECTED: 5,
+      CANCELLED: 5,
+    };
+
+    return [...groups[activeFilter]].sort((a, b) => {
+      if (activeFilter === "ALL") {
+        const statusDifference = statusOrder[a.status] - statusOrder[b.status];
+
+        if (statusDifference !== 0) {
+          return statusDifference;
+        }
+      }
+
+      if (a.status === "COMPLETED" && b.status === "COMPLETED") {
+        const aTime = new Date(a.completedAt || a.pickupDatetime).getTime();
+        const bTime = new Date(b.completedAt || b.pickupDatetime).getTime();
+
+        return bTime - aTime;
+      }
+
+      return (
+        new Date(a.pickupDatetime).getTime() -
+        new Date(b.pickupDatetime).getTime()
+      );
+    });
+  }, [activeFilter, filteredDispatch]);
+
+  function toggleDispatchFilter(filter: DispatchFilter) {
+    setActiveFilter((current) => (current === filter ? "ALL" : filter));
+  }
 
   const refreshAll = useCallback(async () => {
     await Promise.all([fetchDispatchBoard(true), fetchDrivers()]);
@@ -382,41 +527,45 @@ export default function DispatchPage() {
       {/* Summary */}
 
       {data?.summary && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
           <SummaryCard
-            label="Unassigned"
-            value={data.summary.unassignedCount}
+            label="Not Accepted"
+            value={data.summary.notAcceptedCount}
             icon={<Users size={19} />}
+            active={activeFilter === "NOT_ACCEPTED"}
+            onClick={() => toggleDispatchFilter("NOT_ACCEPTED")}
           />
 
           <SummaryCard
-            label="Active Trips"
-            value={data.summary.activeCount}
+            label="On Road"
+            value={data.summary.onRoadCount}
             icon={<Route size={19} />}
+            active={activeFilter === "ON_ROAD"}
+            onClick={() => toggleDispatchFilter("ON_ROAD")}
           />
 
           <SummaryCard
-            label="Upcoming"
-            value={data.summary.upcomingCount}
-            icon={<CalendarDays size={19} />}
+            label="Arrived / Waiting"
+            value={data.summary.arrivedCount}
+            icon={<MapPin size={19} />}
+            active={activeFilter === "ARRIVED"}
+            onClick={() => toggleDispatchFilter("ARRIVED")}
           />
 
           <SummaryCard
-            label="Available Drivers"
-            value={data.summary.availableDrivers}
+            label="Passenger On Board"
+            value={data.summary.passengerOnBoardCount}
             icon={<Car size={19} />}
+            active={activeFilter === "PASSENGER_ON_BOARD"}
+            onClick={() => toggleDispatchFilter("PASSENGER_ON_BOARD")}
           />
 
           <SummaryCard
-            label="Busy Drivers"
-            value={data.summary.busyDrivers}
-            icon={<Clock3 size={19} />}
-          />
-
-          <SummaryCard
-            label="Offline Drivers"
-            value={driverGroups.offline.length}
-            icon={<User size={19} />}
+            label="Completed"
+            value={data.summary.completedCount}
+            icon={<CheckCircle2 size={19} />}
+            active={activeFilter === "COMPLETED"}
+            onClick={() => toggleDispatchFilter("COMPLETED")}
           />
         </div>
       )}
@@ -458,33 +607,53 @@ export default function DispatchPage() {
         </div>
       </div>
 
-      {/* Board */}
+      {/* Dispatch jobs */}
 
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
-        <DispatchColumn
-          title="Unassigned"
-          description="Waiting for driver assignment"
-          dotClass="bg-red-500"
-          bookings={filteredDispatch.unassigned}
-          onBookingClick={openBooking}
-        />
+      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-base font-bold text-slate-900">
+                Dispatch Jobs
+              </h2>
 
-        <DispatchColumn
-          title="Active Trips"
-          description="Accepted and in-progress journeys"
-          dotClass="bg-emerald-500"
-          bookings={filteredDispatch.active}
-          onBookingClick={openBooking}
-        />
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+                {dispatchRows.length}
+              </span>
 
-        <DispatchColumn
-          title="Upcoming"
-          description="Assigned future bookings"
-          dotClass="bg-amber-500"
-          bookings={filteredDispatch.upcoming}
+              {activeFilter !== "ALL" && (
+                <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-semibold text-white">
+                  {getDispatchFilterLabel(activeFilter)}
+                </span>
+              )}
+            </div>
+
+            <p className="mt-1 text-xs text-slate-400">
+              One booking per row. Use the quick action to move a job to its
+              next operational stage.
+            </p>
+          </div>
+
+          {activeFilter !== "ALL" && (
+            <button
+              type="button"
+              onClick={() => setActiveFilter("ALL")}
+              className="inline-flex w-fit items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"
+            >
+              Show all jobs
+            </button>
+          )}
+        </div>
+
+        <DispatchTable
+          bookings={dispatchRows}
+          quickActionBookingId={quickActionBookingId}
           onBookingClick={openBooking}
+          onStatusAction={(booking, action) =>
+            void runBookingStatusAction(action, booking)
+          }
         />
-      </div>
+      </section>
 
       {/* Driver Status */}
 
@@ -555,11 +724,11 @@ export default function DispatchPage() {
 
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <span
-                    className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${
-                      statusClasses[selectedBooking.status]
-                    }`}
+                    className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${getBookingStatusClass(
+                      selectedBooking.status,
+                    )}`}
                   >
-                    {formatStatus(selectedBooking.status)}
+                    {getBookingStatusLabel(selectedBooking.status)}
                   </span>
 
                   {canEditBooking(selectedBooking.status) && (
@@ -571,13 +740,29 @@ export default function DispatchPage() {
                       Edit
                     </Link>
                   )}
+
+                  <Link
+                    href={`/dashboard/bookings/new?mode=return&source=${selectedBooking.id}`}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100"
+                  >
+                    <Route size={12} />
+                    Return
+                  </Link>
+
+                  <Link
+                    href={`/dashboard/bookings/new?mode=duplicate&source=${selectedBooking.id}`}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                  >
+                    <Copy size={12} />
+                    Duplicate Booking
+                  </Link>
                 </div>
               </div>
 
               <button
                 type="button"
                 onClick={closeBooking}
-                disabled={assigning}
+                disabled={assigning || statusActionLoading}
                 className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100"
               >
                 <X size={19} />
@@ -683,6 +868,133 @@ export default function DispatchPage() {
                 </section>
               )}
 
+              {/* Booking Status Controls */}
+
+              <section>
+                <SectionTitle>Booking Status</SectionTitle>
+
+                <div className="mt-3 rounded-xl border border-slate-200 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-800">
+                        {getBookingStatusLabel(selectedBooking.status)}
+                      </p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                        Admin can progress the booking through the same
+                        lifecycle that the Driver App will use later.
+                      </p>
+                    </div>
+
+                    <span
+                      className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-semibold ${getBookingStatusClass(
+                        selectedBooking.status,
+                      )}`}
+                    >
+                      {getBookingStatusLabel(selectedBooking.status)}
+                    </span>
+                  </div>
+
+                  {statusActionError && (
+                    <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-xs font-medium leading-5 text-red-700">
+                      {statusActionError}
+                    </div>
+                  )}
+
+                  {selectedBooking.status === "PENDING" && (
+                    <div className="mt-4 rounded-lg bg-slate-50 px-3 py-3 text-xs leading-5 text-slate-500">
+                      Assign a driver first. Once assigned, you can mark the
+                      driver as accepted.
+                    </div>
+                  )}
+
+                  {selectedBooking.status === "ASSIGNED" && (
+                    <button
+                      type="button"
+                      onClick={() => runBookingStatusAction("accept")}
+                      disabled={statusActionLoading || assigning}
+                      className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-red-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {statusActionLoading ? (
+                        <Loader2 size={16} className="animate-spin" />
+                      ) : null}
+                      Mark Driver Accepted / On Road
+                    </button>
+                  )}
+
+                  {selectedBooking.status === "ACCEPTED" && (
+                    <button
+                      type="button"
+                      onClick={() => runBookingStatusAction("arrived")}
+                      disabled={statusActionLoading}
+                      className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-purple-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {statusActionLoading ? (
+                        <Loader2 size={16} className="animate-spin" />
+                      ) : null}
+                      Mark Arrived / Waiting
+                    </button>
+                  )}
+
+                  {selectedBooking.status === "ARRIVED" && (
+                    <button
+                      type="button"
+                      onClick={() => runBookingStatusAction("start")}
+                      disabled={statusActionLoading}
+                      className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-yellow-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-yellow-600 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {statusActionLoading ? (
+                        <Loader2 size={16} className="animate-spin" />
+                      ) : null}
+                      Mark Passenger On Board
+                    </button>
+                  )}
+
+                  {selectedBooking.status === "STARTED" && (
+                    <button
+                      type="button"
+                      onClick={() => runBookingStatusAction("complete")}
+                      disabled={statusActionLoading}
+                      className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-green-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {statusActionLoading ? (
+                        <Loader2 size={16} className="animate-spin" />
+                      ) : null}
+                      Mark Completed
+                    </button>
+                  )}
+
+                  {["PENDING", "ASSIGNED", "ACCEPTED", "ARRIVED"].includes(
+                    selectedBooking.status,
+                  ) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const confirmed = window.confirm(
+                          `Cancel booking ${selectedBooking.bookingReference}?`,
+                        );
+
+                        if (confirmed) {
+                          void runBookingStatusAction("cancel");
+                        }
+                      }}
+                      disabled={statusActionLoading || assigning}
+                      className="mt-3 flex w-full items-center justify-center rounded-xl border border-red-200 bg-white px-4 py-2.5 text-sm font-semibold text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Cancel Booking
+                    </button>
+                  )}
+
+                  {["COMPLETED", "CANCELLED", "REJECTED"].includes(
+                    selectedBooking.status,
+                  ) && (
+                    <div className="mt-4 rounded-lg bg-slate-50 px-3 py-3 text-xs leading-5 text-slate-500">
+                      This booking is in a final status. No further lifecycle
+                      action is available.
+                    </div>
+                  )}
+                </div>
+              </section>
+
               {/* Assignment */}
 
               {canAssignDriver(selectedBooking.status) && (
@@ -773,135 +1085,320 @@ export default function DispatchPage() {
   );
 }
 
-function DispatchColumn({
-  title,
-  description,
-  dotClass,
+function DispatchTable({
   bookings,
+  quickActionBookingId,
   onBookingClick,
+  onStatusAction,
 }: {
-  title: string;
-  description: string;
-  dotClass: string;
   bookings: Booking[];
+  quickActionBookingId: string | null;
   onBookingClick: (booking: Booking) => void;
+  onStatusAction: (booking: Booking, action: BookingLifecycleAction) => void;
 }) {
+  if (bookings.length === 0) {
+    return (
+      <div className="px-6 py-14 text-center">
+        <Car size={30} className="mx-auto text-slate-300" />
+        <p className="mt-3 text-sm font-semibold text-slate-600">
+          No bookings found
+        </p>
+        <p className="mt-1 text-xs text-slate-400">
+          Try another status filter or search term.
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-[580px] rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
-      <div className="mb-5">
-        <div className="flex items-center gap-3">
-          <div className={`h-3 w-3 rounded-full ${dotClass}`} />
+    <div className="w-full overflow-hidden">
+      <table className="w-full table-fixed border-collapse text-left">
+        <thead>
+          <tr className="bg-slate-950 text-white">
+            <th className="w-[8%] px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wide">
+              Time
+            </th>
+            <th className="w-[10%] px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wide">
+              Booking
+            </th>
+            <th className="w-[12%] px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wide">
+              Passenger
+            </th>
+            <th className="w-[27%] px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wide">
+              Journey
+            </th>
+            <th className="w-[14%] px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wide">
+              Driver
+            </th>
+            <th className="w-[7%] px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wide">
+              Pax / Bag
+            </th>
+            <th className="w-[10%] px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wide">
+              Status
+            </th>
+            <th className="w-[12%] px-3 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wide">
+              Action
+            </th>
+          </tr>
+        </thead>
 
-          <h2 className="text-lg font-bold text-slate-900">{title}</h2>
+        <tbody>
+          {bookings.map((booking) => {
+            const quickAction = getQuickAction(booking.status);
+            const actionLoading = quickActionBookingId === booking.id;
 
-          <span className="ml-auto rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600">
-            {bookings.length}
-          </span>
-        </div>
+            return (
+              <tr
+                key={booking.id}
+                className={`border-b border-slate-100 align-middle transition last:border-b-0 hover:brightness-[0.99] ${getDispatchRowBackground(
+                  booking.status,
+                )}`}
+              >
+                <td
+                  className={`border-l-4 px-3 py-3 ${getDispatchAccentClass(
+                    booking.status,
+                  )}`}
+                >
+                  <p className="text-sm font-bold leading-none text-slate-900">
+                    {formatPickupTime(booking.pickupDatetime)}
+                  </p>
+                  <p className="mt-1 text-[10px] font-medium text-slate-500">
+                    {formatPickupDate(booking.pickupDatetime)}
+                  </p>
+                </td>
 
-        <p className="ml-6 mt-1 text-xs text-slate-400">{description}</p>
-      </div>
+                <td className="px-3 py-3">
+                  <p className="break-words text-xs font-bold leading-4 text-slate-900">
+                    {booking.bookingReference}
+                  </p>
+                </td>
 
-      <div className="space-y-4">
-        {bookings.map((booking) => (
-          <BookingCard
-            key={booking.id}
-            booking={booking}
-            onClick={() => onBookingClick(booking)}
-          />
-        ))}
+                <td className="px-3 py-3">
+                  <p className="truncate text-xs font-semibold text-slate-800">
+                    {booking.customerName}
+                  </p>
+                  {booking.customerPhone && (
+                    <p className="mt-1 truncate text-[10px] text-slate-500">
+                      {booking.customerPhone}
+                    </p>
+                  )}
+                </td>
 
-        {bookings.length === 0 && (
-          <div className="rounded-xl border border-dashed border-slate-300 bg-white/60 px-4 py-10 text-center">
-            <Car size={28} className="mx-auto text-slate-300" />
+                <td className="px-3 py-3">
+                  <div className="space-y-1">
+                    <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-slate-700">
+                      <MapPin size={12} className="shrink-0 text-slate-400" />
+                      <span className="truncate">{booking.pickupAddress}</span>
+                    </div>
+                    <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-slate-500">
+                      <Route size={12} className="shrink-0 text-slate-400" />
+                      <span className="truncate">{booking.dropoffAddress}</span>
+                    </div>
+                  </div>
+                </td>
 
-            <p className="mt-3 text-sm font-medium text-slate-500">
-              No bookings
-            </p>
-          </div>
-        )}
-      </div>
+                <td className="px-3 py-3">
+                  {booking.assignedDriver ? (
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-semibold text-slate-800">
+                        {booking.assignedDriver.name}
+                      </p>
+                      <p className="mt-1 truncate text-[10px] text-slate-500">
+                        {booking.assignedDriver.vehicleNumber ||
+                          booking.assignedDriver.vehicleName ||
+                          "Vehicle not set"}
+                      </p>
+                    </div>
+                  ) : (
+                    <span className="text-[11px] font-semibold text-slate-400">
+                      Unassigned
+                    </span>
+                  )}
+                </td>
+
+                <td className="px-3 py-3">
+                  <div className="text-[10px] font-medium leading-5 text-slate-600">
+                    <div>{booking.passengers ?? "—"} pax</div>
+                    <div>{booking.luggage ?? "—"} bag</div>
+                  </div>
+                </td>
+
+                <td className="px-3 py-3">
+                  <span
+                    className={`inline-flex max-w-full rounded-full border px-2 py-1 text-[9px] font-bold leading-3 ${getBookingStatusClass(
+                      booking.status,
+                    )}`}
+                  >
+                    {getCompactStatusLabel(booking.status)}
+                  </span>
+                </td>
+
+                <td className="px-3 py-3">
+                  <div className="flex items-center justify-end gap-1.5">
+                    {booking.status === "PENDING" && (
+                      <button
+                        type="button"
+                        onClick={() => onBookingClick(booking)}
+                        className="inline-flex h-8 items-center justify-center rounded-lg bg-slate-900 px-2.5 text-[10px] font-bold text-white transition hover:bg-slate-800"
+                      >
+                        Assign
+                      </button>
+                    )}
+
+                    {quickAction && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (quickAction.action === "complete") {
+                            const confirmed = window.confirm(
+                              `Mark ${booking.bookingReference} as completed?`,
+                            );
+
+                            if (!confirmed) {
+                              return;
+                            }
+                          }
+
+                          onStatusAction(booking, quickAction.action);
+                        }}
+                        disabled={actionLoading}
+                        className={`inline-flex h-8 items-center justify-center gap-1 rounded-lg px-2.5 text-[10px] font-bold transition disabled:cursor-not-allowed disabled:opacity-50 ${quickAction.className}`}
+                      >
+                        {actionLoading ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : null}
+                        {quickAction.label}
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => onBookingClick(booking)}
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white/80 text-slate-600 transition hover:bg-white hover:text-slate-900"
+                      title="View booking"
+                    >
+                      <Eye size={13} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
 
-function BookingCard({
-  booking,
-  onClick,
-}: {
-  booking: Booking;
-  onClick: () => void;
-}) {
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="font-bold text-slate-900">{booking.bookingReference}</p>
+function getQuickAction(status: BookingStatus): {
+  label: string;
+  action: BookingLifecycleAction;
+  className: string;
+} | null {
+  switch (status) {
+    case "ASSIGNED":
+      return {
+        label: "On Road",
+        action: "accept",
+        className: "bg-red-600 text-white hover:bg-red-700",
+      };
 
-          <p className="mt-1 text-sm font-medium text-slate-600">
-            {booking.customerName}
-          </p>
-        </div>
+    case "ACCEPTED":
+      return {
+        label: "Arrived",
+        action: "arrived",
+        className: "bg-purple-600 text-white hover:bg-purple-700",
+      };
 
-        <span
-          className={`shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-bold ${
-            statusClasses[booking.status]
-          }`}
-        >
-          {formatStatus(booking.status)}
-        </span>
-      </div>
+    case "ARRIVED":
+      return {
+        label: "Passenger",
+        action: "start",
+        className: "bg-yellow-500 text-slate-950 hover:bg-yellow-600",
+      };
 
-      <div className="mt-4 space-y-3">
-        <CardInfo icon={<MapPin size={14} />} value={booking.pickupAddress} />
+    case "STARTED":
+      return {
+        label: "Complete",
+        action: "complete",
+        className: "bg-green-600 text-white hover:bg-green-700",
+      };
 
-        <CardInfo icon={<Route size={14} />} value={booking.dropoffAddress} />
+    default:
+      return null;
+  }
+}
 
-        <CardInfo
-          icon={<Clock3 size={14} />}
-          value={formatDateTime(booking.pickupDatetime)}
-        />
+function getCompactStatusLabel(status: BookingStatus) {
+  switch (status) {
+    case "PENDING":
+      return "Pending";
+    case "ASSIGNED":
+      return "Not Accepted";
+    case "ACCEPTED":
+      return "On Road";
+    case "ARRIVED":
+      return "Arrived";
+    case "STARTED":
+      return "Passenger On Board";
+    case "COMPLETED":
+      return "Completed";
+    default:
+      return getBookingStatusLabel(status);
+  }
+}
 
-        <div className="flex gap-4 text-xs text-slate-500">
-          <span>{booking.passengers ?? "—"} passengers</span>
+function getDispatchRowBackground(status: BookingStatus) {
+  switch (status) {
+    case "PENDING":
+    case "ASSIGNED":
+      return "bg-slate-50/70";
+    case "ACCEPTED":
+      return "bg-red-50/70";
+    case "ARRIVED":
+      return "bg-purple-50/70";
+    case "STARTED":
+      return "bg-yellow-50/80";
+    case "COMPLETED":
+      return "bg-green-50/70";
+    default:
+      return "bg-white";
+  }
+}
 
-          <span>{booking.luggage ?? "—"} luggage</span>
-        </div>
+function getDispatchAccentClass(status: BookingStatus) {
+  switch (status) {
+    case "PENDING":
+    case "ASSIGNED":
+      return "border-l-slate-400";
+    case "ACCEPTED":
+      return "border-l-red-500";
+    case "ARRIVED":
+      return "border-l-purple-500";
+    case "STARTED":
+      return "border-l-yellow-500";
+    case "COMPLETED":
+      return "border-l-green-500";
+    default:
+      return "border-l-slate-300";
+  }
+}
 
-        {booking.assignedDriver && (
-          <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2">
-            <Car size={14} className="text-slate-500" />
-
-            <div>
-              <p className="text-xs font-semibold text-slate-700">
-                {booking.assignedDriver.name}
-              </p>
-
-              {booking.assignedDriver.vehicleNumber && (
-                <p className="mt-0.5 text-[10px] text-slate-400">
-                  {booking.assignedDriver.vehicleNumber}
-                </p>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-
-      <button
-        type="button"
-        onClick={onClick}
-        className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 py-2.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"
-      >
-        <Eye size={14} />
-
-        {booking.status === "PENDING"
-          ? "View & Assign"
-          : booking.status === "ASSIGNED"
-            ? "View / Reassign"
-            : "View Booking"}
-      </button>
-    </div>
-  );
+function getDispatchFilterLabel(filter: DispatchFilter) {
+  switch (filter) {
+    case "NOT_ACCEPTED":
+      return "Not Accepted";
+    case "ON_ROAD":
+      return "On Road";
+    case "ARRIVED":
+      return "Arrived / Waiting";
+    case "PASSENGER_ON_BOARD":
+      return "Passenger On Board";
+    case "COMPLETED":
+      return "Completed";
+    default:
+      return "All Jobs";
+  }
 }
 
 function DriverColumn({
@@ -983,13 +1480,23 @@ function SummaryCard({
   label,
   value,
   icon,
+  active = false,
+  onClick,
 }: {
   label: string;
   value: number;
   icon: React.ReactNode;
+  active?: boolean;
+  onClick?: () => void;
 }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full rounded-2xl border bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+        active ? "border-slate-500 ring-2 ring-slate-200" : "border-slate-200"
+      }`}
+    >
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs font-medium text-slate-500">{label}</p>
@@ -1001,7 +1508,7 @@ function SummaryCard({
           {icon}
         </div>
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -1037,14 +1544,21 @@ function DetailRow({
   );
 }
 
-function CardInfo({ icon, value }: { icon: React.ReactNode; value: string }) {
-  return (
-    <div className="flex items-start gap-2 text-xs text-slate-500">
-      <span className="mt-0.5 shrink-0 text-slate-400">{icon}</span>
+function formatPickupTime(value: string) {
+  return new Date(value).toLocaleTimeString("en-GB", {
+    timeZone: "Europe/London",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
 
-      <span className="line-clamp-2">{value}</span>
-    </div>
-  );
+function formatPickupDate(value: string) {
+  return new Date(value).toLocaleDateString("en-GB", {
+    timeZone: "Europe/London",
+    day: "2-digit",
+    month: "short",
+  });
 }
 
 function formatDateTime(value: string) {

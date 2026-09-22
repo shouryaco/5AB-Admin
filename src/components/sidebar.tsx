@@ -12,6 +12,7 @@ import {
   Users,
   Settings,
   FileText,
+  ClipboardCheck,
 } from "lucide-react";
 
 import api from "@/lib/api";
@@ -36,6 +37,11 @@ const menuItems = [
     label: "Dispatch",
     href: "/dashboard/dispatch",
     icon: Calendar,
+  },
+  {
+    label: "Cleared Bookings",
+    href: "/dashboard/cleared-bookings",
+    icon: ClipboardCheck,
   },
 
   {

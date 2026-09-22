@@ -1,6 +1,13 @@
 "use client";
 
-import { FormEvent, ReactNode, useCallback, useEffect, useState } from "react";
+import {
+  FormEvent,
+  ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import {
   ArrowLeft,
@@ -15,7 +22,9 @@ import {
   X,
   CalendarDays,
   Clock3,
+  MapPin,
   Route,
+  Trash2,
   Car,
   NotebookText,
   UserCog,
@@ -27,8 +36,6 @@ import {
 import { useRouter } from "next/navigation";
 
 import api from "@/lib/api";
-
-import BookingRoutePlanner from "@/components/bookings/BookingRoutePlanner";
 
 /* =====================================================
    TYPES
@@ -101,12 +108,122 @@ type ViaStop = {
   address: string;
 };
 
+type BookingCloneMode = "duplicate" | "return";
+
+type SourceBooking = {
+  id: string;
+  bookingReference: string;
+
+  accountId: string | null;
+
+  costCenter: string | null;
+  invoiceRef: string | null;
+  jobStatus: string | null;
+  salesman: string | null;
+  nameCardOverride: string | null;
+  nameCardFileUrl: string | null;
+
+  pickupAddress: string;
+  dropoffAddress: string;
+  pickupDatetime: string;
+
+  journeyType: string | null;
+  passengers: number | null;
+
+  bigLuggage: number;
+  smallLuggage: number;
+
+  babySeats: number;
+  childSeats: number;
+  boosterSeats: number;
+
+  notes: string | null;
+  driverNote: string | null;
+
+  preferredVehicleCategory: string | null;
+  requestedDriverType: string | null;
+
+  routeDistanceMeters: number | null;
+  routeDurationSeconds: number | null;
+
+  estimatedDurationMinutes: number;
+
+  bookers: Array<{
+    bookerId: string;
+    isPrimary: boolean;
+    position: number;
+  }>;
+
+  passengersList: Array<{
+    passengerId: string;
+    isPrimary: boolean;
+    position: number;
+  }>;
+
+  vias: Array<{
+    id: string;
+    address: string;
+    position: number;
+  }>;
+
+  finance: {
+    clientQuote: number | null;
+    clientWaitingCharge: number | null;
+    clientParking: number | null;
+    clientCongestion: number | null;
+    clientDiscount: number | null;
+    clientTotal: number | null;
+
+    clientAdminFee: number | null;
+    clientNet: number | null;
+    clientVat: number | null;
+    clientVatPercent: number | null;
+    clientTotalAmount: number | null;
+
+    clientWaitingIncluded: boolean;
+    clientParkingIncluded: boolean;
+    clientPriceOverride: boolean;
+
+    driverCost: number | null;
+    driverWaitingPay: number | null;
+    driverParking: number | null;
+    driverCongestion: number | null;
+    driverTotal: number | null;
+
+    driverWaitingIncluded: boolean;
+    driverParkingIncluded: boolean;
+    driverPayAsStandard: boolean;
+    driverPriceOverride: boolean;
+
+    paymentType: string | null;
+
+    financeNote: string | null;
+    invoiceNote: string | null;
+    extraNote: string | null;
+  } | null;
+};
+
+type PendingPresetSelection = {
+  accountId: string;
+  primaryBookerId: string;
+  additionalBookerIds: string[];
+  primaryPassengerId: string;
+  additionalPassengerIds: string[];
+};
+
 /* =====================================================
    PAGE
 ===================================================== */
 
 export default function NewBookingPage() {
   const router = useRouter();
+
+  const cloneHydratedRef = useRef(false);
+  const clonePresetRef = useRef<PendingPresetSelection | null>(null);
+
+  const [prefillLoading, setPrefillLoading] = useState(false);
+  const [cloneMode, setCloneMode] = useState<BookingCloneMode | null>(null);
+  const [sourceBookingReference, setSourceBookingReference] = useState("");
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -227,6 +344,233 @@ export default function NewBookingPage() {
   const [submitSuccess, setSubmitSuccess] = useState("");
 
   /* =====================================================
+     DUPLICATE / RETURN PREFILL
+
+     URL examples:
+     /dashboard/bookings/new?mode=duplicate&source=<bookingId>
+     /dashboard/bookings/new?mode=return&source=<bookingId>
+
+     No booking is created here. The source booking only
+     pre-fills this New Booking form so the admin can review
+     everything before saving.
+  ===================================================== */
+
+  useEffect(() => {
+    if (cloneHydratedRef.current) {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+
+    const rawMode = params.get("mode");
+    const sourceBookingId = params.get("source");
+
+    if (!sourceBookingId || (rawMode !== "duplicate" && rawMode !== "return")) {
+      return;
+    }
+
+    cloneHydratedRef.current = true;
+
+    const mode: BookingCloneMode = rawMode;
+
+    async function loadSourceBooking() {
+      try {
+        setPrefillLoading(true);
+        setError("");
+
+        const response = await api.get<SourceBooking>(
+          `/bookings/${sourceBookingId}`,
+        );
+
+        const booking = response.data;
+        const accountId = booking.accountId || "";
+
+        const primaryBookerRelation =
+          booking.bookers.find((item) => item.isPrimary) || booking.bookers[0];
+
+        const primaryPassengerRelation =
+          booking.passengersList.find((item) => item.isPrimary) ||
+          booking.passengersList[0];
+
+        clonePresetRef.current = {
+          accountId,
+
+          primaryBookerId: primaryBookerRelation?.bookerId || "",
+
+          additionalBookerIds: booking.bookers
+            .filter((item) => item.bookerId !== primaryBookerRelation?.bookerId)
+            .sort((a, b) => a.position - b.position)
+            .map((item) => item.bookerId),
+
+          primaryPassengerId: primaryPassengerRelation?.passengerId || "",
+
+          additionalPassengerIds: booking.passengersList
+            .filter(
+              (item) =>
+                item.passengerId !== primaryPassengerRelation?.passengerId,
+            )
+            .sort((a, b) => a.position - b.position)
+            .map((item) => item.passengerId),
+        };
+
+        const londonPickup = isoToLondonDateTimeFields(booking.pickupDatetime);
+
+        setCloneMode(mode);
+        setSourceBookingReference(booking.bookingReference);
+
+        setSelectedAccountId(accountId);
+
+        setAccountFields({
+          costCenter: booking.costCenter || "",
+          invoiceRef: booking.invoiceRef || "",
+          jobStatus: booking.jobStatus || "CONFIRMED",
+          salesman: booking.salesman || "",
+          nameCardOverride: booking.nameCardOverride || "",
+          nameCardFileUrl: booking.nameCardFileUrl || "",
+        });
+
+        setJourneyFields({
+          journeyType: booking.journeyType || "TRANSFER",
+
+          // Duplicate keeps the original schedule so the admin can
+          // adjust it if needed. Return intentionally requires a
+          // fresh pickup date/time.
+          pickupDate: mode === "duplicate" ? londonPickup.date : "",
+
+          pickupTime: mode === "duplicate" ? londonPickup.time : "",
+
+          // Return reverses the journey.
+          pickupAddress:
+            mode === "return" ? booking.dropoffAddress : booking.pickupAddress,
+
+          dropoffAddress:
+            mode === "return" ? booking.pickupAddress : booking.dropoffAddress,
+
+          passengerCount: String(booking.passengers ?? 1),
+
+          bigLuggage: String(booking.bigLuggage ?? 0),
+          smallLuggage: String(booking.smallLuggage ?? 0),
+
+          babySeats: String(booking.babySeats ?? 0),
+          childSeats: String(booking.childSeats ?? 0),
+          boosterSeats: String(booking.boosterSeats ?? 0),
+
+          estimatedDurationMinutes: String(
+            booking.estimatedDurationMinutes ?? 120,
+          ),
+
+          // A reversed route should be recalculated.
+          routeDistanceMeters:
+            mode === "return"
+              ? ""
+              : booking.routeDistanceMeters === null
+                ? ""
+                : String(booking.routeDistanceMeters),
+
+          routeDurationSeconds:
+            mode === "return"
+              ? ""
+              : booking.routeDurationSeconds === null
+                ? ""
+                : String(booking.routeDurationSeconds),
+        });
+
+        const copiedVias = [...booking.vias]
+          .sort((a, b) => a.position - b.position)
+          .map((via) => ({
+            id: `copy-via-${via.id}`,
+            address: via.address,
+          }))
+          .filter((via) => via.address.trim());
+
+        setVias(mode === "return" ? copiedVias.reverse() : copiedVias);
+
+        setAllocationFields({
+          preferredVehicleCategory:
+            booking.preferredVehicleCategory || "Executive",
+
+          requestedDriverType: booking.requestedDriverType || "",
+
+          // Deliberately clear the live driver assignment.
+          // This avoids accidental schedule conflicts when a job
+          // is duplicated or when a return journey is created.
+          assignedDriverId: "",
+        });
+
+        setNoteFields({
+          notes: booking.notes || "",
+          driverNote: booking.driverNote || "",
+        });
+
+        const finance = booking.finance;
+
+        setClientFinance({
+          clientQuote: moneyToInput(finance?.clientQuote),
+          clientWaitingCharge: moneyToInput(finance?.clientWaitingCharge),
+          clientParking: moneyToInput(finance?.clientParking),
+          clientCongestion: moneyToInput(finance?.clientCongestion),
+          clientDiscount: moneyToInput(finance?.clientDiscount),
+          clientTotal: moneyToInput(finance?.clientTotal),
+
+          clientAdminFee: moneyToInput(finance?.clientAdminFee),
+          clientNet: moneyToInput(finance?.clientNet),
+          clientVat: moneyToInput(finance?.clientVat),
+
+          clientVatPercent:
+            finance?.clientVatPercent === null ||
+            finance?.clientVatPercent === undefined
+              ? "20"
+              : String(finance.clientVatPercent),
+
+          clientTotalAmount: moneyToInput(finance?.clientTotalAmount),
+
+          clientWaitingIncluded: finance?.clientWaitingIncluded ?? false,
+
+          clientParkingIncluded: finance?.clientParkingIncluded ?? false,
+
+          clientPriceOverride: finance?.clientPriceOverride ?? false,
+
+          paymentType: finance?.paymentType || "ACCOUNT",
+        });
+
+        setDriverFinance({
+          driverCost: moneyToInput(finance?.driverCost),
+
+          driverWaitingPay: moneyToInput(finance?.driverWaitingPay),
+
+          driverParking: moneyToInput(finance?.driverParking),
+
+          driverCongestion: moneyToInput(finance?.driverCongestion),
+
+          driverTotal: moneyToInput(finance?.driverTotal),
+
+          driverWaitingIncluded: finance?.driverWaitingIncluded ?? false,
+
+          driverParkingIncluded: finance?.driverParkingIncluded ?? false,
+
+          driverPayAsStandard: finance?.driverPayAsStandard ?? false,
+
+          driverPriceOverride: finance?.driverPriceOverride ?? false,
+        });
+
+        setFinanceNotes({
+          financeNote: finance?.financeNote || "",
+          invoiceNote: finance?.invoiceNote || "",
+          extraNote: finance?.extraNote || "",
+        });
+      } catch (err) {
+        console.error("Unable to prepare copied booking:", err);
+
+        setError("Unable to load the source booking for duplicate/return.");
+      } finally {
+        setPrefillLoading(false);
+      }
+    }
+
+    void loadSourceBooking();
+  }, []);
+
+  /* =====================================================
      LOAD ACCOUNTS
   ===================================================== */
 
@@ -311,6 +655,40 @@ export default function NewBookingPage() {
 
         setBookers(bookerResponse.data);
         setPassengers(passengerResponse.data);
+
+        const pendingPreset = clonePresetRef.current;
+
+        if (pendingPreset && pendingPreset.accountId === selectedAccountId) {
+          const bookerIds = new Set(bookerResponse.data.map((item) => item.id));
+
+          const passengerIds = new Set(
+            passengerResponse.data.map((item) => item.id),
+          );
+
+          setPrimaryBookerId(
+            bookerIds.has(pendingPreset.primaryBookerId)
+              ? pendingPreset.primaryBookerId
+              : "",
+          );
+
+          setAdditionalBookerIds(
+            pendingPreset.additionalBookerIds.filter((id) => bookerIds.has(id)),
+          );
+
+          setPrimaryPassengerId(
+            passengerIds.has(pendingPreset.primaryPassengerId)
+              ? pendingPreset.primaryPassengerId
+              : "",
+          );
+
+          setAdditionalPassengerIds(
+            pendingPreset.additionalPassengerIds.filter((id) =>
+              passengerIds.has(id),
+            ),
+          );
+
+          clonePresetRef.current = null;
+        }
       } catch (err) {
         console.error("Unable to load presets:", err);
 
@@ -355,10 +733,9 @@ export default function NewBookingPage() {
             step="0.01"
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            className={`booking-input ${
+            className={`booking-input pl-8 ${
               emphasis ? "font-bold text-slate-900" : ""
             }`}
-            style={{ paddingLeft: "2.5rem" }}
             placeholder="0.00"
           />
         </div>
@@ -539,10 +916,6 @@ export default function NewBookingPage() {
     setJourneyFields((current) => ({
       ...current,
       [key]: value,
-      ...((key === "pickupAddress" || key === "dropoffAddress") && {
-        routeDistanceMeters: "",
-        routeDurationSeconds: "",
-      }),
     }));
   }
 
@@ -554,12 +927,6 @@ export default function NewBookingPage() {
         address: "",
       },
     ]);
-
-    setJourneyFields((current) => ({
-      ...current,
-      routeDistanceMeters: "",
-      routeDurationSeconds: "",
-    }));
   }
 
   function updateVia(id: string, value: string) {
@@ -573,22 +940,10 @@ export default function NewBookingPage() {
           : via,
       ),
     );
-
-    setJourneyFields((current) => ({
-      ...current,
-      routeDistanceMeters: "",
-      routeDurationSeconds: "",
-    }));
   }
 
   function removeVia(id: string) {
     setVias((current) => current.filter((via) => via.id !== id));
-
-    setJourneyFields((current) => ({
-      ...current,
-      routeDistanceMeters: "",
-      routeDurationSeconds: "",
-    }));
   }
 
   function toggleAdditionalBooker(id: string) {
@@ -954,14 +1309,16 @@ export default function NewBookingPage() {
      LOADING
   ===================================================== */
 
-  if (loading) {
+  if (loading || prefillLoading) {
     return (
       <div className="flex min-h-[600px] items-center justify-center">
         <div className="text-center">
           <Loader2 className="mx-auto h-8 w-8 animate-spin text-slate-400" />
 
           <p className="mt-3 text-sm text-slate-500">
-            Preparing booking form...
+            {prefillLoading
+              ? "Preparing copied booking..."
+              : "Preparing booking form..."}
           </p>
         </div>
       </div>
@@ -991,11 +1348,19 @@ export default function NewBookingPage() {
 
           <div className="mt-4">
             <h1 className="text-2xl font-bold tracking-tight text-slate-900 lg:text-3xl">
-              New Booking
+              {cloneMode === "return"
+                ? "Return Booking"
+                : cloneMode === "duplicate"
+                  ? "Duplicate Booking"
+                  : "New Booking"}
             </h1>
 
             <p className="mt-1 text-sm text-slate-500">
-              Create and allocate a new chauffeur booking.
+              {cloneMode === "return"
+                ? `Create a return journey from ${sourceBookingReference || "the source booking"}.`
+                : cloneMode === "duplicate"
+                  ? `Create a new booking copied from ${sourceBookingReference || "the source booking"}.`
+                  : "Create and allocate a new chauffeur booking."}
             </p>
           </div>
         </div>
@@ -1012,6 +1377,22 @@ export default function NewBookingPage() {
       </div>
 
       {error && <ErrorMessage>{error}</ErrorMessage>}
+
+      {cloneMode && sourceBookingReference && (
+        <div className="rounded-2xl border border-blue-200 bg-blue-50 px-5 py-4">
+          <p className="text-sm font-bold text-blue-900">
+            {cloneMode === "return"
+              ? `Return booking from ${sourceBookingReference}`
+              : `Duplicate of ${sourceBookingReference}`}
+          </p>
+
+          <p className="mt-1 text-xs leading-5 text-blue-700">
+            {cloneMode === "return"
+              ? "Pickup and destination have been reversed. Return date/time and driver assignment are intentionally blank. Please review the route and pricing before creating the booking."
+              : "Booking details have been copied. Driver assignment is intentionally blank to avoid accidental schedule conflicts. Please review the date/time and pricing before creating the booking."}
+          </p>
+        </div>
+      )}
 
       {/* =================================================
           ACCOUNT ALLOCATION
@@ -1400,8 +1781,7 @@ export default function NewBookingPage() {
                   onChange={(e) =>
                     updateJourneyField("pickupDate", e.target.value)
                   }
-                  className="booking-input"
-                  style={{ paddingLeft: "2.75rem" }}
+                  className="booking-input pl-10"
                 />
               </div>
             </Field>
@@ -1419,8 +1799,7 @@ export default function NewBookingPage() {
                   onChange={(e) =>
                     updateJourneyField("pickupTime", e.target.value)
                   }
-                  className="booking-input"
-                  style={{ paddingLeft: "2.75rem" }}
+                  className="booking-input pl-10"
                 />
               </div>
             </Field>
@@ -1451,31 +1830,97 @@ export default function NewBookingPage() {
         ROUTE
     ============================================= */}
 
-          <BookingRoutePlanner
-            pickupAddress={journeyFields.pickupAddress}
-            dropoffAddress={journeyFields.dropoffAddress}
-            vias={vias}
-            routeDistanceMeters={journeyFields.routeDistanceMeters}
-            routeDurationSeconds={journeyFields.routeDurationSeconds}
-            onPickupAddressChange={(value) =>
-              updateJourneyField("pickupAddress", value)
-            }
-            onDropoffAddressChange={(value) =>
-              updateJourneyField("dropoffAddress", value)
-            }
-            onViaAddressChange={updateVia}
-            onRemoveVia={removeVia}
-            onRouteCalculated={({ distanceMeters, durationSeconds }) => {
-              setJourneyFields((current) => ({
-                ...current,
-                routeDistanceMeters: String(distanceMeters),
-                routeDurationSeconds: String(durationSeconds),
-                estimatedDurationMinutes: String(
-                  Math.max(1, Math.ceil(durationSeconds / 60)),
-                ),
-              }));
-            }}
-          />
+          <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-5">
+            <div className="space-y-4">
+              {/* PICKUP */}
+
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-slate-700">
+                  Pick-Up
+                  <span className="ml-1 text-red-500">*</span>
+                </label>
+
+                <div className="relative">
+                  <MapPin
+                    size={17}
+                    className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-emerald-600"
+                  />
+
+                  <input
+                    value={journeyFields.pickupAddress}
+                    onChange={(e) =>
+                      updateJourneyField("pickupAddress", e.target.value)
+                    }
+                    className="booking-input pl-10"
+                    placeholder="Enter pickup address..."
+                  />
+                </div>
+              </div>
+
+              {/* VIA STOPS */}
+
+              {vias.map((via, index) => (
+                <div
+                  key={via.id}
+                  className="rounded-xl border border-slate-200 bg-white p-4"
+                >
+                  <div className="mb-2 flex items-center justify-between">
+                    <label className="text-sm font-semibold text-slate-700">
+                      Via {index + 1}
+                    </label>
+
+                    <button
+                      type="button"
+                      onClick={() => removeVia(via.id)}
+                      className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-red-500 transition hover:bg-red-50"
+                    >
+                      <Trash2 size={13} />
+                      Remove
+                    </button>
+                  </div>
+
+                  <div className="relative">
+                    <MapPin
+                      size={17}
+                      className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-amber-500"
+                    />
+
+                    <input
+                      value={via.address}
+                      onChange={(e) => updateVia(via.id, e.target.value)}
+                      className="booking-input pl-10"
+                      placeholder={`Enter via stop ${index + 1}...`}
+                    />
+                  </div>
+                </div>
+              ))}
+
+              {/* DROP OFF */}
+
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-slate-700">
+                  Drop Off
+                  <span className="ml-1 text-red-500">*</span>
+                </label>
+
+                <div className="relative">
+                  <MapPin
+                    size={17}
+                    className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-red-500"
+                  />
+
+                  <input
+                    value={journeyFields.dropoffAddress}
+                    onChange={(e) =>
+                      updateJourneyField("dropoffAddress", e.target.value)
+                    }
+                    className="booking-input pl-10"
+                    placeholder="Enter drop-off address..."
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
 
           {/* =============================================
         PASSENGERS / LUGGAGE
@@ -1937,8 +2382,7 @@ export default function NewBookingPage() {
                     onChange={(e) =>
                       updateClientFinance("paymentType", e.target.value)
                     }
-                    className="booking-input"
-                    style={{ paddingLeft: "2.75rem" }}
+                    className="booking-input pl-10"
                   >
                     <option value="ACCOUNT">Account</option>
 
@@ -2097,7 +2541,11 @@ export default function NewBookingPage() {
           <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
             <div>
               <h2 className="text-lg font-bold text-slate-900">
-                Create Booking
+                {cloneMode === "return"
+                  ? "Create Return Booking"
+                  : cloneMode === "duplicate"
+                    ? "Create Duplicate Booking"
+                    : "Create Booking"}
               </h2>
 
               <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-500">
@@ -2132,7 +2580,11 @@ export default function NewBookingPage() {
                 ) : (
                   <>
                     <Check size={16} />
-                    Create Booking
+                    {cloneMode === "return"
+                      ? "Create Return Booking"
+                      : cloneMode === "duplicate"
+                        ? "Create Duplicate Booking"
+                        : "Create Booking"}
                   </>
                 )}
               </button>
@@ -2897,6 +3349,40 @@ function getTimeZoneOffset(date: Date, timeZone: string) {
   );
 
   return asUtc - date.getTime();
+}
+
+function moneyToInput(value: number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  return String(value);
+}
+
+function isoToLondonDateTimeFields(value: string) {
+  const formatter = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+
+  const parts = formatter.formatToParts(new Date(value));
+  const values: Record<string, string> = {};
+
+  for (const part of parts) {
+    if (part.type !== "literal") {
+      values[part.type] = part.value;
+    }
+  }
+
+  return {
+    date: `${values.year}-${values.month}-${values.day}`,
+    time: `${values.hour}:${values.minute}`,
+  };
 }
 
 function londonLocalDateTimeToIso(dateValue: string, timeValue: string) {

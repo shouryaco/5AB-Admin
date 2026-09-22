@@ -52,6 +52,11 @@ type BookingStatus =
   | "REJECTED"
   | "CANCELLED";
 
+import {
+  getBookingStatusClass,
+  getBookingStatusLabel,
+} from "@/lib/booking-status-ui";
+
 type DriverStatus = "AVAILABLE" | "BUSY" | "OFFLINE" | "INACTIVE";
 
 type Driver = {
@@ -249,17 +254,6 @@ type Pagination = {
 type BookingsResponse = {
   data: Booking[];
   pagination: Pagination;
-};
-
-const statusClasses: Record<BookingStatus, string> = {
-  PENDING: "border-blue-200 bg-blue-50 text-blue-700",
-  ASSIGNED: "border-violet-200 bg-violet-50 text-violet-700",
-  ACCEPTED: "border-cyan-200 bg-cyan-50 text-cyan-700",
-  ARRIVED: "border-amber-200 bg-amber-50 text-amber-700",
-  STARTED: "border-orange-200 bg-orange-50 text-orange-700",
-  COMPLETED: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  REJECTED: "border-red-200 bg-red-50 text-red-700",
-  CANCELLED: "border-slate-200 bg-slate-100 text-slate-600",
 };
 
 export default function BookingsPage() {
@@ -1466,9 +1460,11 @@ function formatRouteDuration(value: number | null | undefined) {
 function StatusBadge({ status }: { status: BookingStatus }) {
   return (
     <span
-      className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${statusClasses[status]}`}
+      className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${getBookingStatusClass(
+        status,
+      )}`}
     >
-      {formatStatus(status)}
+      {getBookingStatusLabel(status)}
     </span>
   );
 }

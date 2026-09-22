@@ -13,6 +13,7 @@ import {
   ArrowLeft,
   Building2,
   Check,
+  Copy,
   Loader2,
   Plus,
   RefreshCw,
@@ -22,7 +23,9 @@ import {
   X,
   CalendarDays,
   Clock3,
+  MapPin,
   Route,
+  Trash2,
   Car,
   NotebookText,
   UserCog,
@@ -34,8 +37,6 @@ import {
 import { useParams, useRouter } from "next/navigation";
 
 import api from "@/lib/api";
-
-import BookingRoutePlanner from "@/components/bookings/BookingRoutePlanner";
 
 /* =====================================================
    TYPES
@@ -633,10 +634,9 @@ export default function EditBookingPage() {
             step="0.01"
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            className={`booking-input ${
+            className={`booking-input pl-8 ${
               emphasis ? "font-bold text-slate-900" : ""
             }`}
-            style={{ paddingLeft: "2.5rem" }}
             placeholder="0.00"
           />
         </div>
@@ -817,10 +817,6 @@ export default function EditBookingPage() {
     setJourneyFields((current) => ({
       ...current,
       [key]: value,
-      ...((key === "pickupAddress" || key === "dropoffAddress") && {
-        routeDistanceMeters: "",
-        routeDurationSeconds: "",
-      }),
     }));
   }
 
@@ -832,12 +828,6 @@ export default function EditBookingPage() {
         address: "",
       },
     ]);
-
-    setJourneyFields((current) => ({
-      ...current,
-      routeDistanceMeters: "",
-      routeDurationSeconds: "",
-    }));
   }
 
   function updateVia(id: string, value: string) {
@@ -851,22 +841,10 @@ export default function EditBookingPage() {
           : via,
       ),
     );
-
-    setJourneyFields((current) => ({
-      ...current,
-      routeDistanceMeters: "",
-      routeDurationSeconds: "",
-    }));
   }
 
   function removeVia(id: string) {
     setVias((current) => current.filter((via) => via.id !== id));
-
-    setJourneyFields((current) => ({
-      ...current,
-      routeDistanceMeters: "",
-      routeDurationSeconds: "",
-    }));
   }
 
   function toggleAdditionalBooker(id: string) {
@@ -1197,23 +1175,51 @@ export default function EditBookingPage() {
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            if (
-              window.confirm(
-                "Reload this booking? Unsaved changes will be lost.",
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() =>
+              router.push(
+                `/dashboard/bookings/new?mode=return&source=${bookingId}`,
               )
-            ) {
-              loadEditBooking(true);
             }
-          }}
-          disabled={refreshing}
-          className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
-        >
-          <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
-          Refresh
-        </button>
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm font-semibold text-blue-700 shadow-sm transition hover:bg-blue-100"
+          >
+            <Route size={15} />
+            Return
+          </button>
+
+          <button
+            type="button"
+            onClick={() =>
+              router.push(
+                `/dashboard/bookings/new?mode=duplicate&source=${bookingId}`,
+              )
+            }
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+          >
+            <Copy size={15} />
+            Duplicate Booking
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (
+                window.confirm(
+                  "Reload this booking? Unsaved changes will be lost.",
+                )
+              ) {
+                loadEditBooking(true);
+              }
+            }}
+            disabled={refreshing}
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
+          >
+            <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {error && <ErrorMessage>{error}</ErrorMessage>}
@@ -1629,8 +1635,7 @@ export default function EditBookingPage() {
                   onChange={(e) =>
                     updateJourneyField("pickupDate", e.target.value)
                   }
-                  className="booking-input"
-                  style={{ paddingLeft: "2.75rem" }}
+                  className="booking-input pl-10"
                 />
               </div>
             </Field>
@@ -1648,8 +1653,7 @@ export default function EditBookingPage() {
                   onChange={(e) =>
                     updateJourneyField("pickupTime", e.target.value)
                   }
-                  className="booking-input"
-                  style={{ paddingLeft: "2.75rem" }}
+                  className="booking-input pl-10"
                 />
               </div>
             </Field>
@@ -1680,31 +1684,97 @@ export default function EditBookingPage() {
         ROUTE
     ============================================= */}
 
-          <BookingRoutePlanner
-            pickupAddress={journeyFields.pickupAddress}
-            dropoffAddress={journeyFields.dropoffAddress}
-            vias={vias}
-            routeDistanceMeters={journeyFields.routeDistanceMeters}
-            routeDurationSeconds={journeyFields.routeDurationSeconds}
-            onPickupAddressChange={(value) =>
-              updateJourneyField("pickupAddress", value)
-            }
-            onDropoffAddressChange={(value) =>
-              updateJourneyField("dropoffAddress", value)
-            }
-            onViaAddressChange={updateVia}
-            onRemoveVia={removeVia}
-            onRouteCalculated={({ distanceMeters, durationSeconds }) => {
-              setJourneyFields((current) => ({
-                ...current,
-                routeDistanceMeters: String(distanceMeters),
-                routeDurationSeconds: String(durationSeconds),
-                estimatedDurationMinutes: String(
-                  Math.max(1, Math.ceil(durationSeconds / 60)),
-                ),
-              }));
-            }}
-          />
+          <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-5">
+            <div className="space-y-4">
+              {/* PICKUP */}
+
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-slate-700">
+                  Pick-Up
+                  <span className="ml-1 text-red-500">*</span>
+                </label>
+
+                <div className="relative">
+                  <MapPin
+                    size={17}
+                    className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-emerald-600"
+                  />
+
+                  <input
+                    value={journeyFields.pickupAddress}
+                    onChange={(e) =>
+                      updateJourneyField("pickupAddress", e.target.value)
+                    }
+                    className="booking-input pl-10"
+                    placeholder="Enter pickup address..."
+                  />
+                </div>
+              </div>
+
+              {/* VIA STOPS */}
+
+              {vias.map((via, index) => (
+                <div
+                  key={via.id}
+                  className="rounded-xl border border-slate-200 bg-white p-4"
+                >
+                  <div className="mb-2 flex items-center justify-between">
+                    <label className="text-sm font-semibold text-slate-700">
+                      Via {index + 1}
+                    </label>
+
+                    <button
+                      type="button"
+                      onClick={() => removeVia(via.id)}
+                      className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-red-500 transition hover:bg-red-50"
+                    >
+                      <Trash2 size={13} />
+                      Remove
+                    </button>
+                  </div>
+
+                  <div className="relative">
+                    <MapPin
+                      size={17}
+                      className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-amber-500"
+                    />
+
+                    <input
+                      value={via.address}
+                      onChange={(e) => updateVia(via.id, e.target.value)}
+                      className="booking-input pl-10"
+                      placeholder={`Enter via stop ${index + 1}...`}
+                    />
+                  </div>
+                </div>
+              ))}
+
+              {/* DROP OFF */}
+
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-slate-700">
+                  Drop Off
+                  <span className="ml-1 text-red-500">*</span>
+                </label>
+
+                <div className="relative">
+                  <MapPin
+                    size={17}
+                    className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-red-500"
+                  />
+
+                  <input
+                    value={journeyFields.dropoffAddress}
+                    onChange={(e) =>
+                      updateJourneyField("dropoffAddress", e.target.value)
+                    }
+                    className="booking-input pl-10"
+                    placeholder="Enter drop-off address..."
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
 
           {/* =============================================
         PASSENGERS / LUGGAGE
@@ -2167,8 +2237,7 @@ export default function EditBookingPage() {
                     onChange={(e) =>
                       updateClientFinance("paymentType", e.target.value)
                     }
-                    className="booking-input"
-                    style={{ paddingLeft: "2.75rem" }}
+                    className="booking-input pl-10"
                   >
                     <option value="ACCOUNT">Account</option>
 
