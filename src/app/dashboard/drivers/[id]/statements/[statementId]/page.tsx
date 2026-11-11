@@ -27,6 +27,27 @@ import api from "@/lib/api";
 
 type StatementStatus = "ISSUED" | "PAID" | "VOID";
 
+type BookingSnapshotLink = {
+  id: string;
+  status:
+    | "PENDING"
+    | "ASSIGNED"
+    | "ACCEPTED"
+    | "ARRIVED"
+    | "STARTED"
+    | "COMPLETED"
+    | "CANCELLED"
+    | "REJECTED";
+  pickupDatetime: string;
+  arrivedAt: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  cancelledAt: string | null;
+  finance: {
+    paymentType: string | null;
+  } | null;
+};
+
 type StatementItem = {
   id: string;
   bookingId: string | null;
@@ -36,33 +57,43 @@ type StatementItem = {
   dropoffAddress: string;
   customerName: string;
   journeyType: string | null;
+
   driverCost: number;
   driverWaitingPay: number;
   driverParking: number;
   driverCongestion: number;
+
   netAmount: number;
   vatAmount: number;
   grossAmount: number;
+
+  booking: BookingSnapshotLink | null;
 };
 
 type DriverStatementDetail = {
   id: string;
   statementNumber: string;
+
   periodStart: string;
   periodEnd: string;
+
   statementDate: string;
   dueDate: string;
+
   currency: string;
+
   vatRegistered: boolean;
   vatPercent: number;
+
   netTotal: number;
   vatTotal: number;
   grossTotal: number;
+
   status: StatementStatus;
   paidAt: string | null;
+
   notes: string | null;
-  createdAt: string;
-  updatedAt: string;
+
   driver: {
     id: string;
     name: string;
@@ -74,14 +105,15 @@ type DriverStatementDetail = {
     accountNumber: string | null;
     sortCode: string | null;
   };
+
   items: StatementItem[];
 };
 
-function formatMoney(value: number) {
+function formatMoney(value: number | null | undefined) {
   return new Intl.NumberFormat("en-GB", {
     style: "currency",
     currency: "GBP",
-  }).format(value);
+  }).format(value ?? 0);
 }
 
 function formatDate(value: string) {
@@ -93,16 +125,46 @@ function formatDate(value: string) {
   });
 }
 
-function formatDateTime(value: string) {
+function formatDateTime(value: string | null | undefined) {
+  if (!value) return "—";
+
   return new Date(value).toLocaleString("en-GB", {
     timeZone: "Europe/London",
     day: "2-digit",
-    month: "short",
+    month: "2-digit",
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
   });
+}
+
+function calculateWaitingMinutes(item: StatementItem) {
+  if (!item.booking?.startedAt) {
+    return 0;
+  }
+
+  const pickup = new Date(item.pickupDatetime).getTime();
+  const pob = new Date(item.booking.startedAt).getTime();
+
+  if (!Number.isFinite(pickup) || !Number.isFinite(pob)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.round((pob - pickup) / 60000));
+}
+
+function isCashJob(item: StatementItem) {
+  return (
+    item.booking?.finance?.paymentType?.trim().toUpperCase() === "CASH"
+  );
+}
+
+function isCancelledJob(item: StatementItem) {
+  return (
+    item.booking?.status === "CANCELLED" ||
+    Boolean(item.booking?.cancelledAt)
+  );
 }
 
 function getApiMessage(error: any, fallback: string) {
@@ -117,7 +179,7 @@ function getApiMessage(error: any, fallback: string) {
     : fallback;
 }
 
-export default function DriverStatementDetailPage() {
+export default function DriverPaymentSummaryPage() {
   const params = useParams();
   const router = useRouter();
 
@@ -153,11 +215,12 @@ export default function DriverStatementDetailPage() {
 
         setStatement(response.data);
       } catch (err: any) {
-        console.error("Unable to load driver statement:", err);
+        console.error("Unable to load driver payment summary:", err);
+
         setError(
           getApiMessage(
             err,
-            "Unable to load driver statement.",
+            "Unable to load driver payment summary.",
           ),
         );
       } finally {
@@ -211,6 +274,7 @@ export default function DriverStatementDetailPage() {
       await loadStatement(true);
     } catch (err: any) {
       console.error("Unable to update statement:", err);
+
       setError(
         getApiMessage(
           err,
@@ -227,8 +291,9 @@ export default function DriverStatementDetailPage() {
       <div className="flex min-h-[600px] items-center justify-center">
         <div className="text-center">
           <Loader2 className="mx-auto h-8 w-8 animate-spin text-slate-400" />
+
           <p className="mt-3 text-sm text-slate-500">
-            Loading statement...
+            Loading payment summary...
           </p>
         </div>
       </div>
@@ -240,9 +305,12 @@ export default function DriverStatementDetailPage() {
       <div className="p-6 lg:p-8">
         <div className="rounded-2xl border border-red-200 bg-red-50 p-6">
           <p className="font-semibold text-red-700">
-            Statement unavailable
+            Payment summary unavailable
           </p>
-          <p className="mt-1 text-sm text-red-600">{error}</p>
+
+          <p className="mt-1 text-sm text-red-600">
+            {error}
+          </p>
 
           <button
             type="button"
@@ -262,7 +330,7 @@ export default function DriverStatementDetailPage() {
 
   return (
     <div className="space-y-6 p-6 lg:p-8">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
         <div>
           <button
             type="button"
@@ -276,27 +344,23 @@ export default function DriverStatementDetailPage() {
           </button>
 
           <div className="text-sm text-slate-400">
-            Drivers
+            {statement.driver.name}
             <span className="mx-2">/</span>
-            <span className="text-slate-600">
-              {statement.driver.name}
-            </span>
+            Driver Statement Summary
             <span className="mx-2">/</span>
-            Statements
-            <span className="mx-2">/</span>
-            {statement.statementNumber}
+            Payment Summary
           </div>
 
           <div className="mt-2 flex flex-wrap items-center gap-3">
             <h1 className="text-2xl font-bold tracking-tight text-slate-900 lg:text-3xl">
-              {statement.statementNumber}
+              Payment Summary
             </h1>
 
             <StatusBadge status={statement.status} />
           </div>
 
           <p className="mt-1 text-sm text-slate-500">
-            {statement.driver.name} · {statement.items.length} job
+            {statement.statementNumber} · {statement.items.length} job
             {statement.items.length === 1 ? "" : "s"}
           </p>
         </div>
@@ -331,6 +395,7 @@ export default function DriverStatementDetailPage() {
               ) : (
                 <CheckCircle2 size={16} />
               )}
+
               {statement.status === "PAID"
                 ? "Mark Unpaid"
                 : "Mark Paid"}
@@ -358,17 +423,184 @@ export default function DriverStatementDetailPage() {
           value={formatMoney(statement.netTotal)}
           icon={<Banknote size={19} />}
         />
+
         <TotalCard
           label="VAT"
           value={formatMoney(statement.vatTotal)}
           icon={<ReceiptText size={19} />}
         />
+
         <TotalCard
           label="Gross"
           value={formatMoney(statement.grossTotal)}
           icon={<CircleDollarSign size={19} />}
         />
       </div>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-200 bg-slate-50/70 px-5 py-4">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="font-semibold text-slate-900">
+                Journey & Pricing Details
+              </h2>
+
+              <p className="mt-1 text-xs text-slate-500">
+                Payment breakdown for jobs included in this driver statement.
+              </p>
+            </div>
+
+            <p className="text-xs font-medium text-slate-500">
+              Statement Date: {formatDate(statement.statementDate)}
+            </p>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="min-w-[1500px] w-full border-collapse text-xs">
+            <thead>
+              <tr className="bg-slate-950 text-white">
+                <th
+                  colSpan={5}
+                  className="border-r border-slate-700 px-4 py-3 text-center text-xs font-bold uppercase tracking-wide"
+                >
+                  Journey Details
+                </th>
+
+                <th
+                  colSpan={7}
+                  className="px-4 py-3 text-center text-xs font-bold uppercase tracking-wide"
+                >
+                  Pricing Details
+                </th>
+              </tr>
+
+              <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
+                <TableHead>Details</TableHead>
+                <TableHead>Time Management</TableHead>
+                <TableHead>Pickup</TableHead>
+                <TableHead>Dropoff</TableHead>
+                <TableHead align="center">WT (Mins)</TableHead>
+
+                <TableHead align="right">WT £</TableHead>
+                <TableHead align="right">Parking</TableHead>
+                <TableHead align="right">Congestion</TableHead>
+                <TableHead align="right">Price</TableHead>
+                <TableHead align="right">Total</TableHead>
+                <TableHead align="center">Cash?</TableHead>
+                <TableHead align="center">Cancel?</TableHead>
+              </tr>
+            </thead>
+
+            <tbody className="divide-y divide-slate-100">
+              {statement.items.map((item) => {
+                const waitingMinutes = calculateWaitingMinutes(item);
+
+                return (
+                  <tr
+                    key={item.id}
+                    className="align-top transition hover:bg-slate-50/70"
+                  >
+                    <td className="min-w-[150px] px-4 py-4">
+                      <p className="text-[11px] font-medium text-slate-500">
+                        Job No:
+                        {" "}
+                        {item.bookingId ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              router.push(
+                                `/dashboard/bookings/${item.bookingId}`,
+                              )
+                            }
+                            className="font-bold text-blue-600 hover:underline"
+                          >
+                            {item.bookingReference}
+                          </button>
+                        ) : (
+                          <span className="font-bold text-slate-800">
+                            {item.bookingReference}
+                          </span>
+                        )}
+                      </p>
+
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        Job Type:{" "}
+                        <span className="font-semibold text-slate-700">
+                          {item.journeyType || "—"}
+                        </span>
+                      </p>
+
+                      <p className="mt-2 text-[11px] text-slate-400">
+                        {item.customerName}
+                      </p>
+                    </td>
+
+                    <td className="min-w-[210px] px-4 py-4 text-[11px] leading-5 text-slate-600">
+                      <TimeLine
+                        label="Pick Up"
+                        value={formatDateTime(item.pickupDatetime)}
+                      />
+
+                      <TimeLine
+                        label="POB Time"
+                        value={formatDateTime(item.booking?.startedAt)}
+                      />
+
+                      <TimeLine
+                        label="Clear Time"
+                        value={formatDateTime(item.booking?.completedAt)}
+                      />
+                    </td>
+
+                    <td className="min-w-[240px] px-4 py-4">
+                      <AddressCell value={item.pickupAddress} />
+                    </td>
+
+                    <td className="min-w-[240px] px-4 py-4">
+                      <AddressCell value={item.dropoffAddress} />
+                    </td>
+
+                    <td className="px-4 py-4 text-center text-sm font-semibold text-slate-700">
+                      {waitingMinutes}
+                    </td>
+
+                    <MoneyCell value={item.driverWaitingPay} />
+                    <MoneyCell value={item.driverParking} />
+                    <MoneyCell value={item.driverCongestion} />
+                    <MoneyCell value={item.driverCost} />
+                    <MoneyCell value={item.netAmount} strong />
+
+                    <YesNoCell value={isCashJob(item)} />
+                    <YesNoCell value={isCancelledJob(item)} />
+                  </tr>
+                );
+              })}
+            </tbody>
+
+            <tfoot className="border-t border-slate-200 bg-slate-50">
+              <tr>
+                <td
+                  colSpan={8}
+                  className="px-4 py-4 text-right text-sm font-bold text-slate-700"
+                >
+                  Statement Net
+                </td>
+
+                <td className="px-4 py-4 text-right text-sm font-semibold text-slate-500">
+                  —
+                </td>
+
+                <td className="px-4 py-4 text-right text-sm font-bold text-slate-900">
+                  {formatMoney(statement.netTotal)}
+                </td>
+
+                <td colSpan={2} />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </section>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <InfoSection
@@ -380,22 +612,27 @@ export default function DriverStatementDetailPage() {
               label="Statement Date"
               value={formatDate(statement.statementDate)}
             />
+
             <Detail
               label="Due Date"
               value={formatDate(statement.dueDate)}
             />
+
             <Detail
               label="Period Start"
               value={formatDate(statement.periodStart)}
             />
+
             <Detail
               label="Period End"
               value={formatDate(statement.periodEnd)}
             />
+
             <Detail
               label="VAT Registered"
               value={statement.vatRegistered ? "Yes" : "No"}
             />
+
             <Detail
               label="VAT Rate"
               value={
@@ -404,15 +641,16 @@ export default function DriverStatementDetailPage() {
                   : "0%"
               }
             />
+
             <Detail
               label="Paid Date"
-              value={
-                statement.paidAt
-                  ? formatDateTime(statement.paidAt)
-                  : "—"
-              }
+              value={formatDateTime(statement.paidAt)}
             />
-            <Detail label="Currency" value={statement.currency} />
+
+            <Detail
+              label="Currency"
+              value={statement.currency}
+            />
           </DetailsGrid>
         </InfoSection>
 
@@ -422,24 +660,37 @@ export default function DriverStatementDetailPage() {
         >
           <DetailsGrid>
             <Detail label="Driver" value={statement.driver.name} />
+
             <Detail
               label="Call Sign"
               value={statement.driver.callSign || "—"}
             />
-            <Detail label="Phone" value={statement.driver.phone || "—"} />
-            <Detail label="Email" value={statement.driver.email || "—"} />
+
+            <Detail
+              label="Phone"
+              value={statement.driver.phone || "—"}
+            />
+
+            <Detail
+              label="Email"
+              value={statement.driver.email || "—"}
+            />
+
             <Detail
               label="Bank"
               value={statement.driver.bankName || "—"}
             />
+
             <Detail
               label="Account Holder"
               value={statement.driver.accountHolderName || "—"}
             />
+
             <Detail
               label="Account Number"
               value={statement.driver.accountNumber || "—"}
             />
+
             <Detail
               label="Sort Code"
               value={statement.driver.sortCode || "—"}
@@ -459,126 +710,24 @@ export default function DriverStatementDetailPage() {
         </InfoSection>
       )}
 
-      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-200 bg-slate-50/70 px-6 py-5">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-slate-700 shadow-sm">
-              <ReceiptText size={18} />
-            </div>
-
-            <div>
-              <h2 className="font-semibold text-slate-900">
-                Statement Jobs
-              </h2>
-              <p className="mt-0.5 text-xs text-slate-500">
-                Historical driver payout snapshot for this statement.
-              </p>
-            </div>
-          </div>
+      {statement.vatRegistered && (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 px-5 py-4 text-sm text-slate-600">
+          Net {formatMoney(statement.netTotal)} + VAT{" "}
+          {formatMoney(statement.vatTotal)} = Gross{" "}
+          <span className="font-bold text-slate-900">
+            {formatMoney(statement.grossTotal)}
+          </span>
         </div>
-
-        <div className="overflow-x-auto">
-          <table className="min-w-[1200px] w-full">
-            <thead className="border-b border-slate-200 bg-white">
-              <tr>
-                <TableHead>Job</TableHead>
-                <TableHead>Date</TableHead>
-                <TableHead>Journey</TableHead>
-                <TableHead align="right">Base</TableHead>
-                <TableHead align="right">Waiting</TableHead>
-                <TableHead align="right">Parking</TableHead>
-                <TableHead align="right">Congestion</TableHead>
-                <TableHead align="right">Net</TableHead>
-                <TableHead align="right">VAT</TableHead>
-                <TableHead align="right">Gross</TableHead>
-              </tr>
-            </thead>
-
-            <tbody className="divide-y divide-slate-100">
-              {statement.items.map((item) => (
-                <tr
-                  key={item.id}
-                  className="align-top transition hover:bg-slate-50/70"
-                >
-                  <td className="px-5 py-4">
-                    {item.bookingId ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          router.push(
-                            `/dashboard/bookings/${item.bookingId}`,
-                          )
-                        }
-                        className="font-semibold text-slate-900 hover:text-slate-600"
-                      >
-                        {item.bookingReference}
-                      </button>
-                    ) : (
-                      <p className="font-semibold text-slate-900">
-                        {item.bookingReference}
-                      </p>
-                    )}
-
-                    <p className="mt-1 text-xs text-slate-400">
-                      {item.customerName}
-                    </p>
-                  </td>
-
-                  <td className="whitespace-nowrap px-5 py-4 text-sm text-slate-600">
-                    {formatDateTime(item.pickupDatetime)}
-                  </td>
-
-                  <td className="max-w-[360px] px-5 py-4">
-                    <div className="space-y-2 text-sm text-slate-600">
-                      <div className="flex gap-2">
-                        <MapPin
-                          size={14}
-                          className="mt-0.5 shrink-0 text-slate-400"
-                        />
-                        <span>{item.pickupAddress}</span>
-                      </div>
-                      <div className="flex gap-2">
-                        <MapPin
-                          size={14}
-                          className="mt-0.5 shrink-0 text-slate-400"
-                        />
-                        <span>{item.dropoffAddress}</span>
-                      </div>
-                    </div>
-                  </td>
-
-                  <MoneyCell value={item.driverCost} />
-                  <MoneyCell value={item.driverWaitingPay} />
-                  <MoneyCell value={item.driverParking} />
-                  <MoneyCell value={item.driverCongestion} />
-                  <MoneyCell value={item.netAmount} strong />
-                  <MoneyCell value={item.vatAmount} />
-                  <MoneyCell value={item.grossAmount} strong />
-                </tr>
-              ))}
-            </tbody>
-
-            <tfoot className="border-t border-slate-200 bg-slate-50">
-              <tr>
-                <td
-                  colSpan={7}
-                  className="px-5 py-4 text-right text-sm font-bold text-slate-700"
-                >
-                  Statement Total
-                </td>
-                <MoneyCell value={statement.netTotal} strong />
-                <MoneyCell value={statement.vatTotal} strong />
-                <MoneyCell value={statement.grossTotal} strong />
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-      </section>
+      )}
     </div>
   );
 }
 
-function StatusBadge({ status }: { status: StatementStatus }) {
+function StatusBadge({
+  status,
+}: {
+  status: StatementStatus;
+}) {
   const className =
     status === "PAID"
       ? "border-emerald-200 bg-emerald-50 text-emerald-700"
@@ -610,13 +759,109 @@ function TotalCard({
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
           {label}
         </p>
-        <div className="text-slate-400">{icon}</div>
+
+        <div className="text-slate-400">
+          {icon}
+        </div>
       </div>
 
       <p className="mt-3 text-2xl font-bold tracking-tight text-slate-900">
         {value}
       </p>
     </div>
+  );
+}
+
+function TimeLine({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div>
+      <span className="font-semibold text-slate-500">
+        {label}:
+      </span>{" "}
+      <span className="text-slate-700">
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function AddressCell({
+  value,
+}: {
+  value: string;
+}) {
+  return (
+    <div className="flex gap-2 text-[11px] leading-5 text-slate-600">
+      <MapPin
+        size={13}
+        className="mt-0.5 shrink-0 text-slate-400"
+      />
+
+      <span>
+        {value || "—"}
+      </span>
+    </div>
+  );
+}
+
+function TableHead({
+  children,
+  align = "left",
+}: {
+  children: ReactNode;
+  align?: "left" | "center" | "right";
+}) {
+  const alignClass =
+    align === "right"
+      ? "text-right"
+      : align === "center"
+        ? "text-center"
+        : "text-left";
+
+  return (
+    <th
+      className={`whitespace-nowrap border-r border-slate-200 px-4 py-3 text-[11px] font-bold uppercase tracking-wide last:border-r-0 ${alignClass}`}
+    >
+      {children}
+    </th>
+  );
+}
+
+function MoneyCell({
+  value,
+  strong = false,
+}: {
+  value: number;
+  strong?: boolean;
+}) {
+  return (
+    <td
+      className={`whitespace-nowrap px-4 py-4 text-right text-sm ${
+        strong
+          ? "font-bold text-slate-900"
+          : "font-semibold text-slate-600"
+      }`}
+    >
+      {formatMoney(value)}
+    </td>
+  );
+}
+
+function YesNoCell({
+  value,
+}: {
+  value: boolean;
+}) {
+  return (
+    <td className="px-4 py-4 text-center text-sm font-bold text-slate-700">
+      {value ? "Y" : "N"}
+    </td>
   );
 }
 
@@ -636,15 +881,23 @@ function InfoSection({
           {icon}
         </div>
 
-        <h2 className="font-semibold text-slate-900">{title}</h2>
+        <h2 className="font-semibold text-slate-900">
+          {title}
+        </h2>
       </div>
 
-      <div className="p-6">{children}</div>
+      <div className="p-6">
+        {children}
+      </div>
     </section>
   );
 }
 
-function DetailsGrid({ children }: { children: React.ReactNode }) {
+function DetailsGrid({
+  children,
+}: {
+  children: ReactNode;
+}) {
   return (
     <div className="grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-2">
       {children}
@@ -664,47 +917,10 @@ function Detail({
       <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
         {label}
       </p>
+
       <p className="mt-1.5 break-words text-sm font-medium text-slate-700">
         {value}
       </p>
     </div>
-  );
-}
-
-function TableHead({
-  children,
-  align = "left",
-}: {
-  children: ReactNode;
-  align?: "left" | "right";
-}) {
-  return (
-    <th
-      className={`whitespace-nowrap px-5 py-3.5 text-xs font-bold uppercase tracking-wide text-slate-500 ${
-        align === "right" ? "text-right" : "text-left"
-      }`}
-    >
-      {children}
-    </th>
-  );
-}
-
-function MoneyCell({
-  value,
-  strong = false,
-}: {
-  value: number;
-  strong?: boolean;
-}) {
-  return (
-    <td
-      className={`whitespace-nowrap px-5 py-4 text-right text-sm ${
-        strong
-          ? "font-bold text-slate-900"
-          : "font-semibold text-slate-600"
-      }`}
-    >
-      {formatMoney(value)}
-    </td>
   );
 }
