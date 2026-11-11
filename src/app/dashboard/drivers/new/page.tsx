@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, ReactNode, useState } from "react";
+import { FormEvent, ReactNode, useRef, useState } from "react";
 
 import { useRouter } from "next/navigation";
 
@@ -17,6 +17,7 @@ import {
   Save,
   ShieldCheck,
   UserRound,
+  Camera,
 } from "lucide-react";
 
 import api from "@/lib/api";
@@ -154,11 +155,40 @@ export default function AddDriverPage() {
 
   const [success, setSuccess] = useState(false);
 
+  const photoInputRef = useRef<HTMLInputElement>(null);
+
+  const [profilePhoto, setProfilePhoto] = useState<File | null>(null);
+  const [photoPreview, setPhotoPreview] = useState("");
+  const [photoError, setPhotoError] = useState("");
+
   function updateField(field: keyof FormData, value: string) {
     setForm((current) => ({
       ...current,
       [field]: value,
     }));
+  }
+
+  function selectProfilePhoto(file: File) {
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
+
+    if (!allowedTypes.includes(file.type)) {
+      setPhotoError("Please select a JPG, PNG or WEBP image.");
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      setPhotoError("Profile photo cannot be larger than 5MB.");
+      return;
+    }
+
+    setPhotoError("");
+    setProfilePhoto(file);
+
+    if (photoPreview) {
+      URL.revokeObjectURL(photoPreview);
+    }
+
+    setPhotoPreview(URL.createObjectURL(file));
   }
 
   function optionalString(value: string) {
@@ -297,11 +327,42 @@ export default function AddDriverPage() {
           : {}),
       };
 
-      const response = await api.post("/drivers", payload);
-
-      setSuccess(true);
+      const response = await api.post<{ id: string }>("/drivers", payload);
 
       const driverId = response.data.id;
+
+      if (profilePhoto) {
+        try {
+          const formData = new FormData();
+
+          formData.append("file", profilePhoto);
+
+          await api.post(`/drivers/${driverId}/photo`, formData);
+        } catch (photoUploadError: any) {
+          console.error(
+            "Driver created but profile photo upload failed:",
+            photoUploadError,
+          );
+
+          const photoMessage = photoUploadError?.response?.data?.message;
+
+          setError(
+            Array.isArray(photoMessage)
+              ? `Driver created, but profile photo upload failed: ${photoMessage.join(", ")}`
+              : `Driver created, but profile photo upload failed: ${
+                  photoMessage || "Unknown upload error"
+                }`,
+          );
+
+          setTimeout(() => {
+            router.push(`/dashboard/drivers/${driverId}`);
+          }, 1200);
+
+          return;
+        }
+      }
+
+      setSuccess(true);
 
       setTimeout(() => {
         router.push(`/dashboard/drivers/${driverId}`);
@@ -349,6 +410,67 @@ export default function AddDriverPage() {
 
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Driver Type */}
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-5">
+          <p className="text-sm font-semibold text-slate-900">
+            Driver Profile Photo
+          </p>
+
+          <p className="mt-1 text-xs text-slate-400">
+            JPG, PNG or WEBP. Maximum 5MB.
+          </p>
+
+          <div className="mt-4 flex items-center gap-5">
+            {photoPreview ? (
+              <img
+                src={photoPreview}
+                alt="Driver preview"
+                className="h-24 w-24 rounded-2xl border border-slate-200 object-cover"
+              />
+            ) : (
+              <div className="flex h-24 w-24 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
+                <Camera size={28} />
+              </div>
+            )}
+
+            <div>
+              <input
+                ref={photoInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+
+                  if (file) {
+                    selectProfilePhoto(file);
+                  }
+                }}
+              />
+
+              <button
+                type="button"
+                onClick={() => photoInputRef.current?.click()}
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
+              >
+                <Camera size={16} />
+                {profilePhoto ? "Change Photo" : "Upload Photo"}
+              </button>
+
+              {profilePhoto && (
+                <p className="mt-2 max-w-[240px] truncate text-xs text-slate-500">
+                  {profilePhoto.name}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {photoError && (
+            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+              {photoError}
+            </div>
+          )}
+        </div>
 
         <Section
           title="Driver Information"
@@ -474,15 +596,6 @@ export default function AddDriverPage() {
               />
             </Field>
 
-            <Field label="Profile Picture URL" span>
-              <input
-                type="url"
-                value={form.photo}
-                onChange={(e) => updateField("photo", e.target.value)}
-                placeholder="https://..."
-                className="input"
-              />
-            </Field>
           </FormGrid>
         </Section>
 

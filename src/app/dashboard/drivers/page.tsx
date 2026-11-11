@@ -14,6 +14,7 @@ import {
   UserCheck,
   Users,
   Plus,
+  Download,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
@@ -23,16 +24,34 @@ type DriverStatus = "AVAILABLE" | "BUSY" | "OFFLINE" | "INACTIVE";
 
 type Driver = {
   id: string;
+
   name: string;
+  firstName?: string | null;
+  lastName?: string | null;
+
+  driverType?: string | null;
+  callSign?: string | null;
+
   phone: string;
+  email?: string | null;
+
   photo: string | null;
+
+  driverGrade?: string | null;
+  accountStatus?: string | null;
+
   vehicleName: string | null;
   vehicleNumber: string | null;
+
   status: DriverStatus;
+
   latitude: number | null;
   longitude: number | null;
   lastLocationUpdate: string | null;
+
+  appAccessEnabled?: boolean;
   userId?: string | null;
+
   createdAt?: string;
   updatedAt?: string;
 };
@@ -157,6 +176,89 @@ export default function DriversPage() {
     return new Date(date).toLocaleString();
   }
 
+  function exportDriversCsv() {
+    if (!drivers.length) {
+      return;
+    }
+
+    const csvEscape = (value: unknown) => {
+      if (value === null || value === undefined) {
+        return '""';
+      }
+
+      const stringValue = String(value);
+
+      return `"${stringValue.replace(/"/g, '""')}"`;
+    };
+
+    const headers = [
+      "Driver ID",
+      "Call Sign",
+      "First Name",
+      "Last Name",
+      "Full Name",
+      "Driver Type",
+      "Phone",
+      "Email",
+      "Driver Grade",
+      "Account Status",
+      "Vehicle",
+      "Registration Number",
+      "Operational Status",
+      "App Access",
+      "Last Location Update",
+      "Created Date",
+    ];
+
+    const rows = drivers
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((driver) => [
+        driver.id,
+        driver.callSign || "",
+        driver.firstName || "",
+        driver.lastName || "",
+        driver.name || "",
+        driver.driverType || "",
+        driver.phone || "",
+        driver.email || "",
+        driver.driverGrade || "",
+        driver.accountStatus || "",
+        driver.vehicleName || "",
+        driver.vehicleNumber || "",
+        driver.status || "",
+        driver.appAccessEnabled ? "Yes" : "No",
+        driver.lastLocationUpdate
+          ? new Date(driver.lastLocationUpdate).toLocaleString("en-GB")
+          : "",
+        driver.createdAt
+          ? new Date(driver.createdAt).toLocaleDateString("en-GB")
+          : "",
+      ]);
+
+    const csv = [
+      headers.map(csvEscape).join(","),
+      ...rows.map((row) => row.map(csvEscape).join(",")),
+    ].join("\r\n");
+
+    const blob = new Blob(["\uFEFF", csv], {
+      type: "text/csv;charset=utf-8;",
+    });
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const date = new Date().toISOString().slice(0, 10);
+
+    link.href = url;
+    link.download = `5ab-drivers-${date}.csv`;
+
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    URL.revokeObjectURL(url);
+  }
+
   if (loading) {
     return (
       <div className="p-6 lg:p-8">
@@ -189,7 +291,17 @@ export default function DriversPage() {
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={exportDriversCsv}
+            disabled={!drivers.length}
+            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Download size={16} />
+            Export CSV
+          </button>
+
           <button
             type="button"
             onClick={() => fetchDrivers(true)}

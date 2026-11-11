@@ -1,22 +1,17 @@
 "use client";
 
-import {
-  FormEvent,
-  ReactNode,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   ArrowLeft,
   Building2,
   Check,
   Copy,
+  IdCard,
   Loader2,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   UserRound,
   UsersRound,
@@ -346,6 +341,7 @@ export default function EditBookingPage() {
   });
 
   const [savingBooking, setSavingBooking] = useState(false);
+  const [resettingStatus, setResettingStatus] = useState(false);
 
   const [submitError, setSubmitError] = useState("");
 
@@ -388,7 +384,9 @@ export default function EditBookingPage() {
         if (accountId) {
           const [bookerResponse, passengerResponse] = await Promise.all([
             api.get<Booker[]>(`/clients/bookers?accountId=${accountId}`),
-            api.get<Passenger[]>(`/clients/passengers?accountId=${accountId}`),
+            api.get<Passenger[]>(
+              `/clients/passengers?accountId=${accountId}`,
+            ),
           ]);
 
           loadedBookers = bookerResponse.data;
@@ -881,6 +879,51 @@ export default function EditBookingPage() {
     bookingStatus,
   );
 
+  async function resetJobStatus() {
+    if (!bookingId || resettingStatus) {
+      return;
+    }
+
+    const targetStatus = allocationFields.assignedDriverId
+      ? "ASSIGNED"
+      : "PENDING";
+
+    const confirmed = window.confirm(
+      `Reset this booking from ${bookingStatus.replaceAll("_", " ")} to ${targetStatus}?\n\nThis will clear the current lifecycle progress for this job.`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setResettingStatus(true);
+      setSubmitError("");
+      setSubmitSuccess("");
+
+      const response = await api.patch<BookingDetail>(
+        `/bookings/${bookingId}/reset-status`,
+      );
+
+      setBookingStatus(response.data.status);
+      setSubmitSuccess(
+        `Job status reset to ${response.data.status.replaceAll("_", " ")}.`,
+      );
+    } catch (err: any) {
+      console.error("Unable to reset job status:", err);
+
+      const message = err?.response?.data?.message;
+
+      setSubmitError(
+        Array.isArray(message)
+          ? message.join(", ")
+          : message || "Unable to reset job status.",
+      );
+    } finally {
+      setResettingStatus(false);
+    }
+  }
+
   async function updateBooking() {
     setSubmitError("");
     setSubmitSuccess("");
@@ -1044,7 +1087,8 @@ export default function EditBookingPage() {
       ),
       estimatedDurationMinutes: estimatedDuration,
 
-      preferredVehicleCategory: allocationFields.preferredVehicleCategory || "",
+      preferredVehicleCategory:
+        allocationFields.preferredVehicleCategory || "",
       requestedDriverType: allocationFields.requestedDriverType || "",
 
       notes: noteFields.notes.trim(),
@@ -1067,7 +1111,9 @@ export default function EditBookingPage() {
         clientNet: optionalMoneyOrNull(clientFinance.clientNet),
         clientVat: optionalMoneyOrNull(clientFinance.clientVat),
         clientVatPercent: optionalMoneyOrNull(clientFinance.clientVatPercent),
-        clientTotalAmount: optionalMoneyOrNull(clientFinance.clientTotalAmount),
+        clientTotalAmount: optionalMoneyOrNull(
+          clientFinance.clientTotalAmount,
+        ),
         clientWaitingIncluded: clientFinance.clientWaitingIncluded,
         clientParkingIncluded: clientFinance.clientParkingIncluded,
         clientPriceOverride: clientFinance.clientPriceOverride,
@@ -1204,6 +1250,33 @@ export default function EditBookingPage() {
 
           <button
             type="button"
+            onClick={() =>
+              router.push(`/dashboard/bookings/${bookingId}/name-board`)
+            }
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-semibold text-violet-700 shadow-sm transition hover:bg-violet-100"
+          >
+            <IdCard size={15} />
+            Name Board
+          </button>
+
+          {!['PENDING', 'ASSIGNED'].includes(bookingStatus) && (
+            <button
+              type="button"
+              onClick={resetJobStatus}
+              disabled={resettingStatus || savingBooking}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-800 shadow-sm transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {resettingStatus ? (
+                <Loader2 size={15} className="animate-spin" />
+              ) : (
+                <RotateCcw size={15} />
+              )}
+              {resettingStatus ? "Resetting..." : "Reset Job Status"}
+            </button>
+          )}
+
+          <button
+            type="button"
             onClick={() => {
               if (
                 window.confirm(
@@ -1216,7 +1289,10 @@ export default function EditBookingPage() {
             disabled={refreshing}
             className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
           >
-            <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
+            <RefreshCw
+              size={15}
+              className={refreshing ? "animate-spin" : ""}
+            />
             Refresh
           </button>
         </div>
@@ -1242,8 +1318,7 @@ export default function EditBookingPage() {
 
         {isLocked && (
           <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            This booking is {bookingStatus.toLowerCase()} and can no longer be
-            edited.
+            This booking is {bookingStatus.toLowerCase()} and can no longer be edited.
           </div>
         )}
       </section>
@@ -2626,6 +2701,8 @@ function QuickBookerModal({
     }
   }
 
+
+
   return (
     <Modal title="Quick Add Booker" onClose={onClose}>
       <form onSubmit={submit} className="space-y-5">
@@ -3123,7 +3200,10 @@ function ModalActions({
   );
 }
 
-function toInputValue(value: number | null | undefined, fallback = "") {
+function toInputValue(
+  value: number | null | undefined,
+  fallback = "",
+) {
   if (value === null || value === undefined) {
     return fallback;
   }
@@ -3181,17 +3261,24 @@ function isoToLondonDateTimeFields(value: string) {
   };
 }
 
-function safeInteger(value: string) {
+function safeInteger(
+  value: string,
+) {
   const number = Number(value);
 
-  if (!Number.isFinite(number) || number < 0) {
+  if (
+    !Number.isFinite(number) ||
+    number < 0
+  ) {
     return 0;
   }
 
   return Math.floor(number);
 }
 
-function optionalInteger(value: string): number | undefined {
+function optionalInteger(
+  value: string,
+): number | undefined {
   if (!value.trim()) {
     return undefined;
   }
@@ -3202,10 +3289,15 @@ function optionalInteger(value: string): number | undefined {
     return undefined;
   }
 
-  return Math.max(0, Math.floor(number));
+  return Math.max(
+    0,
+    Math.floor(number),
+  );
 }
 
-function optionalMoney(value: string): number | undefined {
+function optionalMoney(
+  value: string,
+): number | undefined {
   if (!value.trim()) {
     return undefined;
   }
@@ -3219,28 +3311,42 @@ function optionalMoney(value: string): number | undefined {
   return number;
 }
 
-function getTimeZoneOffset(date: Date, timeZone: string) {
-  const formatter = new Intl.DateTimeFormat("en-GB", {
-    timeZone,
+function getTimeZoneOffset(
+  date: Date,
+  timeZone: string,
+) {
+  const formatter =
+    new Intl.DateTimeFormat(
+      "en-GB",
+      {
+        timeZone,
 
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
 
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
 
-    hourCycle: "h23",
-  });
+        hourCycle: "h23",
+      },
+    );
 
-  const parts = formatter.formatToParts(date);
+  const parts =
+    formatter.formatToParts(
+      date,
+    );
 
-  const values: Record<string, string> = {};
+  const values: Record<
+    string,
+    string
+  > = {};
 
   for (const part of parts) {
     if (part.type !== "literal") {
-      values[part.type] = part.value;
+      values[part.type] =
+        part.value;
     }
   }
 
@@ -3253,36 +3359,86 @@ function getTimeZoneOffset(date: Date, timeZone: string) {
     Number(values.second),
   );
 
-  return asUtc - date.getTime();
+  return (
+    asUtc -
+    date.getTime()
+  );
 }
 
-function londonLocalDateTimeToIso(dateValue: string, timeValue: string) {
-  const [year, month, day] = dateValue.split("-").map(Number);
+function londonLocalDateTimeToIso(
+  dateValue: string,
+  timeValue: string,
+) {
+  const [
+    year,
+    month,
+    day,
+  ] = dateValue
+    .split("-")
+    .map(Number);
 
-  const [hour, minute] = timeValue.split(":").map(Number);
+  const [
+    hour,
+    minute,
+  ] = timeValue
+    .split(":")
+    .map(Number);
 
-  if (!year || !month || !day || Number.isNaN(hour) || Number.isNaN(minute)) {
-    throw new Error("Invalid date/time");
+  if (
+    !year ||
+    !month ||
+    !day ||
+    Number.isNaN(hour) ||
+    Number.isNaN(minute)
+  ) {
+    throw new Error(
+      "Invalid date/time",
+    );
   }
 
-  const wallClockAsUtc = new Date(
-    Date.UTC(year, month - 1, day, hour, minute, 0),
-  );
+  const wallClockAsUtc =
+    new Date(
+      Date.UTC(
+        year,
+        month - 1,
+        day,
+        hour,
+        minute,
+        0,
+      ),
+    );
 
-  const timeZone = "Europe/London";
+  const timeZone =
+    "Europe/London";
 
-  let offset = getTimeZoneOffset(wallClockAsUtc, timeZone);
+  let offset =
+    getTimeZoneOffset(
+      wallClockAsUtc,
+      timeZone,
+    );
 
-  let actualUtc = new Date(wallClockAsUtc.getTime() - offset);
+  let actualUtc =
+    new Date(
+      wallClockAsUtc.getTime() -
+        offset,
+    );
 
   /*
    * Recalculate once because the
    * first conversion could cross a
    * daylight-saving boundary.
    */
-  offset = getTimeZoneOffset(actualUtc, timeZone);
+  offset =
+    getTimeZoneOffset(
+      actualUtc,
+      timeZone,
+    );
 
-  actualUtc = new Date(wallClockAsUtc.getTime() - offset);
+  actualUtc =
+    new Date(
+      wallClockAsUtc.getTime() -
+        offset,
+    );
 
   return actualUtc.toISOString();
 }

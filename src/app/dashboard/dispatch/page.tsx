@@ -7,9 +7,12 @@ import {
   CalendarDays,
   Car,
   CheckCircle2,
+  ClipboardCheck,
   Clock3,
   Copy,
+  NotebookText,
   Eye,
+  IdCard,
   Loader2,
   MapPin,
   Pencil,
@@ -42,6 +45,7 @@ type BookingStatus =
   | "CANCELLED";
 
 type DriverStatus = "AVAILABLE" | "BUSY" | "OFFLINE" | "INACTIVE";
+
 
 type BookingLifecycleAction =
   | "accept"
@@ -84,6 +88,7 @@ type Booking = {
 
   journeyType?: string;
   notes?: string | null;
+  driverNote?: string | null;
 
   status: BookingStatus;
 
@@ -92,6 +97,16 @@ type Booking = {
   assignedDriver?: Driver | null;
 
   completedAt?: string | null;
+};
+
+type WhatsAppBookingDetail = Booking & {
+  passengersList?: Array<{
+    isPrimary: boolean;
+    position: number;
+    passenger: {
+      name: string;
+    };
+  }>;
 };
 
 type DispatchSummary = {
@@ -161,17 +176,20 @@ export default function DispatchPage() {
 
   const [assigning, setAssigning] = useState(false);
   const [statusActionLoading, setStatusActionLoading] = useState(false);
-  const [quickActionBookingId, setQuickActionBookingId] = useState<
-    string | null
-  >(null);
+  const [quickActionBookingId, setQuickActionBookingId] = useState<string | null>(
+    null,
+  );
 
-  const [activeFilter, setActiveFilter] = useState<DispatchFilter>("ALL");
+  const [activeFilter, setActiveFilter] =
+    useState<DispatchFilter>("ALL");
 
   const [error, setError] = useState("");
   const [assignmentError, setAssignmentError] = useState("");
   const [statusActionError, setStatusActionError] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [copyingWhatsApp, setCopyingWhatsApp] = useState(false);
+  const [whatsAppCopied, setWhatsAppCopied] = useState(false);
 
   const fetchDrivers = useCallback(async () => {
     try {
@@ -254,6 +272,45 @@ export default function DispatchPage() {
     setSelectedDriverId("");
     setAssignmentError("");
     setStatusActionError("");
+  }
+
+  async function copyWhatsAppMessage() {
+    if (!selectedBooking) {
+      return;
+    }
+
+    try {
+      setCopyingWhatsApp(true);
+      setWhatsAppCopied(false);
+
+      const response = await api.get<WhatsAppBookingDetail>(
+        `/bookings/${selectedBooking.id}`,
+      );
+
+      const booking = response.data;
+      const primaryPassenger =
+        booking.passengersList
+          ?.slice()
+          .sort((a, b) => {
+            if (a.isPrimary !== b.isPrimary) {
+              return a.isPrimary ? -1 : 1;
+            }
+
+            return a.position - b.position;
+          })[0]?.passenger?.name?.trim() || booking.customerName;
+
+      const message = buildWhatsAppJobMessage(booking, primaryPassenger);
+
+      await copyTextToClipboard(message);
+
+      setWhatsAppCopied(true);
+      window.setTimeout(() => setWhatsAppCopied(false), 2200);
+    } catch (error) {
+      console.error("Unable to copy WhatsApp message:", error);
+      window.alert("Unable to copy WhatsApp message.");
+    } finally {
+      setCopyingWhatsApp(false);
+    }
   }
 
   async function assignDriver() {
@@ -394,6 +451,7 @@ export default function DispatchPage() {
           booking.customerPhone,
           booking.pickupAddress,
           booking.dropoffAddress,
+          booking.driverNote,
           booking.assignedDriver?.name,
           booking.assignedDriver?.vehicleName,
           booking.assignedDriver?.vehicleNumber,
@@ -613,9 +671,7 @@ export default function DispatchPage() {
         <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-base font-bold text-slate-900">
-                Dispatch Jobs
-              </h2>
+              <h2 className="text-base font-bold text-slate-900">Dispatch Jobs</h2>
 
               <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
                 {dispatchRows.length}
@@ -629,8 +685,7 @@ export default function DispatchPage() {
             </div>
 
             <p className="mt-1 text-xs text-slate-400">
-              One booking per row. Use the quick action to move a job to its
-              next operational stage.
+              One booking per row. Use the quick action to move a job to its next operational stage.
             </p>
           </div>
 
@@ -756,6 +811,26 @@ export default function DispatchPage() {
                     <Copy size={12} />
                     Duplicate Booking
                   </Link>
+                  <Link
+                    href={`/dashboard/bookings/${selectedBooking.id}/name-board`}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1.5 text-xs font-semibold text-violet-700 transition hover:bg-violet-100"
+                  >
+                    <IdCard size={12} />
+                    Name Board
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => void copyWhatsAppMessage()}
+                    disabled={copyingWhatsApp}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {copyingWhatsApp ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <ClipboardCheck size={12} />
+                    )}
+                    {whatsAppCopied ? "Copied" : "Copy WhatsApp"}
+                  </button>
                 </div>
               </div>
 
@@ -827,6 +902,27 @@ export default function DispatchPage() {
                 </div>
               </section>
 
+              {/* Driver Note */}
+
+              {selectedBooking.driverNote?.trim() && (
+                <section>
+                  <SectionTitle>Driver Note</SectionTitle>
+
+                  <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                    <div className="flex items-start gap-3">
+                      <NotebookText
+                        size={17}
+                        className="mt-0.5 shrink-0 text-amber-600"
+                      />
+
+                      <p className="whitespace-pre-wrap text-sm leading-6 text-amber-950">
+                        {selectedBooking.driverNote}
+                      </p>
+                    </div>
+                  </div>
+                </section>
+              )}
+
               {/* Current Driver */}
 
               {selectedBooking.assignedDriver && (
@@ -880,8 +976,8 @@ export default function DispatchPage() {
                         {getBookingStatusLabel(selectedBooking.status)}
                       </p>
                       <p className="mt-1 text-xs leading-5 text-slate-500">
-                        Admin can progress the booking through the same
-                        lifecycle that the Driver App will use later.
+                        Admin can progress the booking through the same lifecycle
+                        that the Driver App will use later.
                       </p>
                     </div>
 
@@ -902,8 +998,8 @@ export default function DispatchPage() {
 
                   {selectedBooking.status === "PENDING" && (
                     <div className="mt-4 rounded-lg bg-slate-50 px-3 py-3 text-xs leading-5 text-slate-500">
-                      Assign a driver first. Once assigned, you can mark the
-                      driver as accepted.
+                      Assign a driver first. Once assigned, you can mark the driver
+                      as accepted.
                     </div>
                   )}
 
@@ -988,8 +1084,8 @@ export default function DispatchPage() {
                     selectedBooking.status,
                   ) && (
                     <div className="mt-4 rounded-lg bg-slate-50 px-3 py-3 text-xs leading-5 text-slate-500">
-                      This booking is in a final status. No further lifecycle
-                      action is available.
+                      This booking is in a final status. No further lifecycle action
+                      is available.
                     </div>
                   )}
                 </div>
@@ -1094,8 +1190,23 @@ function DispatchTable({
   bookings: Booking[];
   quickActionBookingId: string | null;
   onBookingClick: (booking: Booking) => void;
-  onStatusAction: (booking: Booking, action: BookingLifecycleAction) => void;
+  onStatusAction: (
+    booking: Booking,
+    action: BookingLifecycleAction,
+  ) => void;
 }) {
+  const [nowMs, setNowMs] = useState<number | null>(null);
+
+  useEffect(() => {
+    const updateNow = () => setNowMs(Date.now());
+
+    updateNow();
+
+    const timer = window.setInterval(updateNow, 30_000);
+
+    return () => window.clearInterval(timer);
+  }, []);
+
   if (bookings.length === 0) {
     return (
       <div className="px-6 py-14 text-center">
@@ -1165,6 +1276,12 @@ function DispatchTable({
                   <p className="mt-1 text-[10px] font-medium text-slate-500">
                     {formatPickupDate(booking.pickupDatetime)}
                   </p>
+
+                  <RideStartCountdown
+                    pickupDatetime={booking.pickupDatetime}
+                    status={booking.status}
+                    nowMs={nowMs}
+                  />
                 </td>
 
                 <td className="px-3 py-3">
@@ -1194,6 +1311,16 @@ function DispatchTable({
                       <Route size={12} className="shrink-0 text-slate-400" />
                       <span className="truncate">{booking.dropoffAddress}</span>
                     </div>
+
+                    {booking.driverNote?.trim() && (
+                      <div
+                        className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold text-amber-700"
+                        title={booking.driverNote}
+                      >
+                        <NotebookText size={11} className="shrink-0" />
+                        <span className="truncate">Driver note: {booking.driverNote}</span>
+                      </div>
+                    )}
                   </div>
                 </td>
 
@@ -1290,11 +1417,96 @@ function DispatchTable({
   );
 }
 
-function getQuickAction(status: BookingStatus): {
-  label: string;
-  action: BookingLifecycleAction;
-  className: string;
-} | null {
+function RideStartCountdown({
+  pickupDatetime,
+  status,
+  nowMs,
+}: {
+  pickupDatetime: string;
+  status: BookingStatus;
+  nowMs: number | null;
+}) {
+  if (status === "STARTED") {
+    return (
+      <p className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-semibold text-yellow-700">
+        <Clock3 size={10} />
+        Ride started
+      </p>
+    );
+  }
+
+  if (status === "COMPLETED") {
+    return (
+      <p className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-semibold text-green-700">
+        <CheckCircle2 size={10} />
+        Completed
+      </p>
+    );
+  }
+
+  if (status === "CANCELLED" || status === "REJECTED") {
+    return null;
+  }
+
+  if (nowMs === null) {
+    return (
+      <p className="mt-1.5 text-[10px] font-medium text-slate-400">
+        Calculating...
+      </p>
+    );
+  }
+
+  const pickupMs = new Date(pickupDatetime).getTime();
+
+  if (!Number.isFinite(pickupMs)) {
+    return null;
+  }
+
+  const differenceMs = pickupMs - nowMs;
+  const absoluteMinutes = Math.floor(Math.abs(differenceMs) / 60_000);
+  const hours = Math.floor(absoluteMinutes / 60);
+  const minutes = absoluteMinutes % 60;
+
+  const duration =
+    hours > 0
+      ? `${hours}h ${minutes}m`
+      : `${Math.max(1, minutes)}m`;
+
+  if (differenceMs < 0) {
+    return (
+      <p className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-bold text-red-700">
+        <Clock3 size={10} />
+        Due {duration} ago
+      </p>
+    );
+  }
+
+  const remainingMinutes = Math.ceil(differenceMs / 60_000);
+
+  const className =
+    remainingMinutes <= 30
+      ? "text-red-700"
+      : remainingMinutes <= 60
+        ? "text-amber-700"
+        : "text-slate-600";
+
+  return (
+    <p
+      className={`mt-1.5 inline-flex items-center gap-1 text-[10px] font-bold ${className}`}
+    >
+      <Clock3 size={10} />
+      Starts in {duration}
+    </p>
+  );
+}
+
+function getQuickAction(status: BookingStatus):
+  | {
+      label: string;
+      action: BookingLifecycleAction;
+      className: string;
+    }
+  | null {
   switch (status) {
     case "ASSIGNED":
       return {
@@ -1494,7 +1706,9 @@ function SummaryCard({
       type="button"
       onClick={onClick}
       className={`w-full rounded-2xl border bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
-        active ? "border-slate-500 ring-2 ring-slate-200" : "border-slate-200"
+        active
+          ? "border-slate-500 ring-2 ring-slate-200"
+          : "border-slate-200"
       }`}
     >
       <div className="flex items-center justify-between">
@@ -1542,6 +1756,94 @@ function DetailRow({
       </div>
     </div>
   );
+}
+
+
+function buildWhatsAppJobMessage(
+  booking: WhatsAppBookingDetail,
+  passengerName: string,
+) {
+  const jobType = formatWhatsAppJobType(booking.journeyType);
+  const dateTime = formatWhatsAppDateTime(booking.pickupDatetime);
+  const driverNote = booking.driverNote?.trim() || "—";
+
+  return [
+    `Job Type: ${jobType}`,
+    "",
+    "Date and Time:",
+    dateTime,
+    "",
+    "Passenger Information:",
+    passengerName || "—",
+    "",
+    "Pick Up:",
+    booking.pickupAddress || "—",
+    "",
+    "Dropoff:",
+    booking.dropoffAddress || "—",
+    "",
+    "Driver Notes:",
+    driverNote,
+  ].join("\n");
+}
+
+function formatWhatsAppJobType(value?: string | null) {
+  if (!value?.trim()) {
+    return "Transfer";
+  }
+
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function formatWhatsAppDateTime(value: string) {
+  const date = new Date(value);
+
+  const time = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+
+  const day = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    weekday: "short",
+  }).format(date);
+
+  const calendarDate = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(date);
+
+  return `${time} ${day}, ${calendarDate}`;
+}
+
+async function copyTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+
+  if (!copied) {
+    throw new Error("Clipboard copy failed");
+  }
 }
 
 function formatPickupTime(value: string) {

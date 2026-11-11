@@ -1,6 +1,13 @@
 "use client";
 
-import { FormEvent, ReactNode, useCallback, useEffect, useState } from "react";
+import {
+  FormEvent,
+  ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import {
   ArrowLeft,
@@ -20,6 +27,7 @@ import {
   UserRound,
   X,
   Pencil,
+  Camera,
 } from "lucide-react";
 
 import { useParams, useRouter } from "next/navigation";
@@ -220,7 +228,35 @@ const accountStatusStyles: Record<AccountStatus, string> = {
 
   CLOSED: "border-slate-200 bg-slate-100 text-slate-600",
 };
+const driverDocumentTypeLabels: Record<string, string> = {
+  DRIVING_LICENCE: "Driving Licence",
+  NATIONAL_INSURANCE: "National Insurance",
+  PCO_CARD: "PCO Card",
+  PCO_PAPER: "PCO Paper",
+};
 
+const vehicleDocumentTypeLabels: Record<string, string> = {
+  INSURANCE_CERTIFICATE: "Insurance Certificate",
+  VEHICLE_PCO_LICENCE: "Vehicle PCO Licence",
+  LOG_BOOK: "Log Book",
+  MOT_CERTIFICATE: "MOT Certificate",
+};
+
+function getVehicleDocumentTitle(documentType: string, title?: string | null) {
+  if (documentType === "OTHER") {
+    return title?.trim() || "Other Document";
+  }
+
+  return vehicleDocumentTypeLabels[documentType] || formatText(documentType);
+}
+
+function getDriverDocumentTitle(documentType: string, title?: string | null) {
+  if (documentType === "OTHER") {
+    return title?.trim() || "Other Document";
+  }
+
+  return driverDocumentTypeLabels[documentType] || formatText(documentType);
+}
 export default function DriverProfilePage() {
   const router = useRouter();
 
@@ -337,6 +373,57 @@ export default function DriverProfilePage() {
     }
   }
 
+  const photoInputRef = useRef<HTMLInputElement>(null);
+
+  const [photoUploading, setPhotoUploading] = useState(false);
+
+  const [photoError, setPhotoError] = useState("");
+
+  async function uploadProfilePhoto(file: File) {
+    if (!driver) {
+      return;
+    }
+
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
+
+    if (!allowedTypes.includes(file.type)) {
+      setPhotoError("Please select a JPG, PNG or WEBP image.");
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      setPhotoError("Profile photo cannot be larger than 5MB.");
+      return;
+    }
+
+    try {
+      setPhotoUploading(true);
+      setPhotoError("");
+
+      const formData = new FormData();
+
+      formData.append("file", file);
+
+      await api.post(`/drivers/${driver.id}/photo`, formData);
+
+      await fetchDriver(true);
+    } catch (err: any) {
+      const message = err?.response?.data?.message;
+
+      setPhotoError(
+        Array.isArray(message)
+          ? message.join(", ")
+          : message || "Unable to upload profile photo.",
+      );
+    } finally {
+      setPhotoUploading(false);
+
+      if (photoInputRef.current) {
+        photoInputRef.current.value = "";
+      }
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex min-h-[600px] items-center justify-center">
@@ -415,17 +502,54 @@ export default function DriverProfilePage() {
         <div className="p-6 lg:p-7">
           <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-5">
-              {driver.photo ? (
-                <img
-                  src={driver.photo}
-                  alt={driver.name}
-                  className="h-24 w-24 rounded-2xl object-cover"
-                />
-              ) : (
-                <div className="flex h-24 w-24 shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-3xl font-bold text-white">
-                  {driver.name.charAt(0).toUpperCase()}
+              <div className="shrink-0">
+                <div className="relative">
+                  {driver.photo ? (
+                    <img
+                      src={driver.photo}
+                      alt={driver.name}
+                      className="h-24 w-24 rounded-2xl border border-slate-200 object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-24 w-24 items-center justify-center rounded-2xl bg-slate-900 text-3xl font-bold text-white">
+                      {driver.name.charAt(0).toUpperCase()}
+                    </div>
+                  )}
+
+                  <input
+                    ref={photoInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    className="hidden"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+
+                      if (file) {
+                        void uploadProfilePhoto(file);
+                      }
+                    }}
+                  />
                 </div>
-              )}
+
+                <button
+                  type="button"
+                  onClick={() => photoInputRef.current?.click()}
+                  disabled={photoUploading}
+                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {photoUploading ? (
+                    <>
+                      <Loader2 size={15} className="animate-spin" />
+                      Uploading...
+                    </>
+                  ) : (
+                    <>
+                      <Camera size={15} />
+                      Upload Photo
+                    </>
+                  )}
+                </button>
+              </div>
 
               <div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -445,6 +569,16 @@ export default function DriverProfilePage() {
 
                   {driver.driverGrade && ` • ${driver.driverGrade}`}
                 </p>
+
+                <p className="mt-1 text-xs text-slate-400">
+                  Click the camera icon to upload JPG, PNG or WEBP up to 5MB.
+                </p>
+
+                {photoError && (
+                  <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+                    {photoError}
+                  </div>
+                )}
 
                 <div className="mt-4 flex flex-wrap gap-2">
                   <StatusBadge className={driverStatusStyles[driver.status]}>
@@ -681,7 +815,10 @@ export default function DriverProfilePage() {
             {driver.documents.map((document) => (
               <DocumentCard
                 key={document.id}
-                title={document.title || formatText(document.documentType)}
+                title={getDriverDocumentTitle(
+                  document.documentType,
+                  document.title,
+                )}
                 status={document.status}
                 number={document.documentNumber}
                 expiry={document.expiryDate}
@@ -822,9 +959,10 @@ export default function DriverProfilePage() {
                       {vehicle.documents.map((document) => (
                         <DocumentCard
                           key={document.id}
-                          title={
-                            document.title || formatText(document.documentType)
-                          }
+                          title={getVehicleDocumentTitle(
+                            document.documentType,
+                            document.title,
+                          )}
                           status={document.status}
                           number={document.documentNumber}
                           expiry={document.expiryDate}
@@ -1471,7 +1609,7 @@ function AddDriverDocumentModal({
   const [form, setForm] = useState({
     documentType: "DRIVING_LICENCE",
 
-    title: "Driving Licence Card",
+    title: "Driving Licence",
 
     fileUrl: "",
 
@@ -1553,7 +1691,23 @@ function AddDriverDocumentModal({
           <ModalField label="Document Type">
             <select
               value={form.documentType}
-              onChange={(e) => update("documentType", e.target.value)}
+              onChange={(e) => {
+                const documentType = e.target.value;
+
+                const labels: Record<string, string> = {
+                  DRIVING_LICENCE: "Driving Licence",
+                  NATIONAL_INSURANCE: "National Insurance",
+                  PCO_CARD: "PCO Card",
+                  PCO_PAPER: "PCO Paper",
+                  OTHER: "",
+                };
+
+                setForm((current) => ({
+                  ...current,
+                  documentType,
+                  title: labels[documentType] || "",
+                }));
+              }}
               className="modal-input"
             >
               <option value="DRIVING_LICENCE">Driving Licence</option>
@@ -1765,7 +1919,23 @@ function EditDriverDocumentModal({
           <ModalField label="Document Type">
             <select
               value={form.documentType}
-              onChange={(e) => update("documentType", e.target.value)}
+              onChange={(e) => {
+                const documentType = e.target.value;
+
+                const labels: Record<string, string> = {
+                  DRIVING_LICENCE: "Driving Licence",
+                  NATIONAL_INSURANCE: "National Insurance",
+                  PCO_CARD: "PCO Card",
+                  PCO_PAPER: "PCO Paper",
+                  OTHER: "",
+                };
+
+                setForm((current) => ({
+                  ...current,
+                  documentType,
+                  title: labels[documentType] || "",
+                }));
+              }}
               className="modal-input"
             >
               <option value="DRIVING_LICENCE">Driving Licence</option>
@@ -1975,7 +2145,23 @@ function EditVehicleDocumentModal({
           <ModalField label="Document Type">
             <select
               value={form.documentType}
-              onChange={(e) => update("documentType", e.target.value)}
+              onChange={(e) => {
+                const documentType = e.target.value;
+
+                const labels: Record<string, string> = {
+                  INSURANCE_CERTIFICATE: "Insurance Certificate",
+                  VEHICLE_PCO_LICENCE: "Vehicle PCO Licence",
+                  LOG_BOOK: "Log Book",
+                  MOT_CERTIFICATE: "MOT Certificate",
+                  OTHER: "",
+                };
+
+                setForm((current) => ({
+                  ...current,
+                  documentType,
+                  title: labels[documentType] || "",
+                }));
+              }}
               className="modal-input"
             >
               <option value="INSURANCE_CERTIFICATE">
@@ -2119,7 +2305,7 @@ function AddVehicleDocumentModal({
   const [form, setForm] = useState({
     documentType: "INSURANCE_CERTIFICATE",
 
-    title: "Car Insurance Certificate",
+    title: "Insurance Certificate",
 
     fileUrl: "",
 
@@ -2200,7 +2386,23 @@ function AddVehicleDocumentModal({
           <ModalField label="Document Type">
             <select
               value={form.documentType}
-              onChange={(e) => update("documentType", e.target.value)}
+              onChange={(e) => {
+                const documentType = e.target.value;
+
+                const labels: Record<string, string> = {
+                  INSURANCE_CERTIFICATE: "Insurance Certificate",
+                  VEHICLE_PCO_LICENCE: "Vehicle PCO Licence",
+                  LOG_BOOK: "Log Book",
+                  MOT_CERTIFICATE: "MOT Certificate",
+                  OTHER: "",
+                };
+
+                setForm((current) => ({
+                  ...current,
+                  documentType,
+                  title: labels[documentType] || "",
+                }));
+              }}
               className="modal-input"
             >
               <option value="INSURANCE_CERTIFICATE">
