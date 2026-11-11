@@ -474,7 +474,18 @@ export default function DriverProfilePage() {
           Back to Drivers
         </button>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() =>
+              router.push(`/dashboard/drivers/${driver.id}/statements`)
+            }
+            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+          >
+            <FileText size={15} />
+            Statements
+          </button>
+
           <button
             type="button"
             onClick={() => router.push(`/dashboard/drivers/${driver.id}/edit`)}
